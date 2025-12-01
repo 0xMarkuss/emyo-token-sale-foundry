@@ -1,0 +1,230 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+
+import {Roles} from "../access/Roles.sol";
+import {Errors} from "../libs/Errors.sol";
+
+/// @title StakingRewards
+/// @notice Minimal single-sided staking with continuous rewards rate (per second).
+/// @dev Reward rate is in rewards per second, scaled by rewards token decimals.
+contract StakingRewards is AccessControl, Pausable {
+    using SafeERC20 for IERC20;
+
+    IERC20 public immutable stakingToken;
+    IERC20 public immutable rewardsToken;
+    uint8 public immutable rewardsTokenDecimals;
+
+    uint256 public rewardRate;
+    uint256 public lastUpdateTime;
+    uint256 public rewardPerTokenStored;
+
+    uint256 public totalStaked;
+    mapping(address => uint256) public balances;
+    mapping(address => uint256) public userRewardPerTokenPaid;
+    mapping(address => uint256) public rewards;
+
+    uint256 public constant DEFAULT_DISTRIBUTION_PERIOD = 30 days;
+
+    event RewardRateUpdated(uint256 rate, uint256 periodEndTime);
+    event RewardsToppedUp(uint256 amount, uint256 newRate, uint256 periodEndTime);
+    event Staked(address indexed user, uint256 amount);
+    event Withdrawn(address indexed user, uint256 amount);
+    event RewardPaid(address indexed user, uint256 reward);
+
+    constructor(IERC20 stakingToken_, IERC20 rewardsToken_, address admin) {
+        if (address(stakingToken_) == address(0) || address(rewardsToken_) == address(0) || admin == address(0)) revert Errors.ZeroAddress();
+        stakingToken = stakingToken_;
+        rewardsToken = rewardsToken_;
+        rewardsTokenDecimals = IERC20Metadata(address(rewardsToken_)).decimals();
+        lastUpdateTime = block.timestamp;
+        _grantRole(DEFAULT_ADMIN_ROLE, admin);
+        _grantRole(Roles.PAUSER_ROLE, admin);
+        _grantRole(Roles.STAKING_ADMIN_ROLE, admin);
+    }
+
+    modifier updateReward(address account) {
+        rewardPerTokenStored = rewardPerToken();
+        lastUpdateTime = block.timestamp;
+        if (account != address(0)) {
+            rewards[account] = earned(account);
+            userRewardPerTokenPaid[account] = rewardPerTokenStored;
+        }
+        _;
+    }
+
+    // ============ External Functions ============
+
+    /// @notice Stake tokens to earn rewards.
+    function stake(uint256 amount) external whenNotPaused updateReward(msg.sender) {
+        if (amount == 0) revert Errors.ZeroAmount();
+        totalStaked += amount;
+        balances[msg.sender] += amount;
+        stakingToken.safeTransferFrom(msg.sender, address(this), amount);
+        emit Staked(msg.sender, amount);
+    }
+
+    /// @notice Withdraw staked tokens.
+    function withdraw(uint256 amount) public whenNotPaused updateReward(msg.sender) {
+        if (amount == 0) revert Errors.ZeroAmount();
+        if (amount > balances[msg.sender]) revert Errors.InsufficientBalance();
+        balances[msg.sender] -= amount;
+        totalStaked -= amount;
+        stakingToken.safeTransfer(msg.sender, amount);
+        emit Withdrawn(msg.sender, amount);
+    }
+
+    /// @notice Claim earned rewards.
+    function getReward() public whenNotPaused updateReward(msg.sender) {
+        uint256 reward = rewards[msg.sender];
+        rewards[msg.sender] = 0;
+        rewardsToken.safeTransfer(msg.sender, reward);
+        emit RewardPaid(msg.sender, reward);
+    }
+
+    /// @notice Withdraw all staked tokens and claim rewards.
+    function exit() external {
+        withdraw(balances[msg.sender]);
+        getReward();
+    }
+
+    // ============ Admin Functions ============
+
+    /// @notice Pause staking operations.
+    function pause() external onlyRole(Roles.PAUSER_ROLE) {
+        _pause();
+    }
+
+    /// @notice Unpause staking operations.
+    function unpause() external onlyRole(Roles.PAUSER_ROLE) {
+        _unpause();
+    }
+
+    /// @notice Set reward rate (rewards per second).
+    /// @dev Validates that contract has sufficient funds to sustain the rate.
+    /// @param rate Rewards per second (in rewards token units with decimals).
+    function setRewardRate(uint256 rate) external onlyRole(Roles.STAKING_ADMIN_ROLE) updateReward(address(0)) {
+        if (rate > 0) {
+            uint256 totalAvailableBalance = rewardsToken.balanceOf(address(this));
+            uint256 availableFunds = totalAvailableBalance;
+            if (address(stakingToken) == address(rewardsToken)) {
+                availableFunds = totalAvailableBalance >= totalStaked ? totalAvailableBalance - totalStaked : 0;
+            }
+            if (availableFunds < rate) {
+                revert Errors.InvalidParam();
+            }
+        }
+        rewardRate = rate;
+        uint256 periodEndTime = rate > 0 ? _calculatePeriodEndTime(rate) : 0;
+        emit RewardRateUpdated(rate, periodEndTime);
+    }
+
+    /// @notice Top-up rewards and automatically set rate to distribute all available rewards over default period.
+    /// @param amount Amount of rewards token to add (already includes decimals).
+    /// @dev After adding amount, calculates rate based on TOTAL available balance (including staked tokens if same token).
+    /// @dev Works correctly when stakingToken == rewardsToken (same token for staking and rewards).
+    function topUpRewards(uint256 amount) external updateReward(address(0)) {
+        if (amount == 0) revert Errors.ZeroAmount();
+        rewardsToken.safeTransferFrom(msg.sender, address(this), amount);
+        
+        uint256 totalAvailableBalance = rewardsToken.balanceOf(address(this));
+        uint256 availableRewards = totalAvailableBalance;
+        if (address(stakingToken) == address(rewardsToken)) {
+            availableRewards = totalAvailableBalance >= totalStaked ? totalAvailableBalance - totalStaked : 0;
+        }
+        
+        uint256 newRate = availableRewards / DEFAULT_DISTRIBUTION_PERIOD;
+        rewardRate = newRate;
+        uint256 periodEndTime = block.timestamp + DEFAULT_DISTRIBUTION_PERIOD;
+        
+        emit RewardsToppedUp(amount, newRate, periodEndTime);
+    }
+
+    /// @notice Top-up rewards and set rate to distribute all available rewards over custom period.
+    /// @param amount Amount of rewards token to add (already includes decimals).
+    /// @param periodSeconds Period in seconds to distribute the rewards.
+    /// @dev After adding amount, calculates rate based on TOTAL available balance (including staked tokens if same token).
+    /// @dev Works correctly when stakingToken == rewardsToken (same token for staking and rewards).
+    function topUpRewardsWithPeriod(uint256 amount, uint256 periodSeconds) external updateReward(address(0)) {
+        if (amount == 0) revert Errors.ZeroAmount();
+        if (periodSeconds == 0 || periodSeconds < 1 days) revert Errors.InvalidParam();
+        rewardsToken.safeTransferFrom(msg.sender, address(this), amount);
+        
+        uint256 totalAvailableBalance = rewardsToken.balanceOf(address(this));
+        uint256 availableRewards = totalAvailableBalance;
+        if (address(stakingToken) == address(rewardsToken)) {
+            availableRewards = totalAvailableBalance >= totalStaked ? totalAvailableBalance - totalStaked : 0;
+        }
+        
+        uint256 newRate = availableRewards / periodSeconds;
+        rewardRate = newRate;
+        uint256 periodEndTime = block.timestamp + periodSeconds;
+        
+        emit RewardsToppedUp(amount, newRate, periodEndTime);
+    }
+
+    // ============ View Functions ============
+
+    /// @notice Calculate accumulated reward per token staked.
+    /// @dev Uses rewards token decimals for precision.
+    /// @return Current reward per token (scaled by 10^rewardsTokenDecimals).
+    function rewardPerToken() public view returns (uint256) {
+        if (totalStaked == 0) return rewardPerTokenStored;
+        uint256 timeElapsed = block.timestamp - lastUpdateTime;
+        uint256 scale = 10**rewardsTokenDecimals;
+        return rewardPerTokenStored + ((rewardRate * timeElapsed * scale) / totalStaked);
+    }
+
+    /// @notice Calculate earned rewards for an account.
+    /// @param account User address.
+    /// @return Total earned rewards (in rewards token units).
+    function earned(address account) public view returns (uint256) {
+        uint256 scale = 10**rewardsTokenDecimals;
+        uint256 rewardPerTokenDelta = rewardPerToken() - userRewardPerTokenPaid[account];
+        return ((balances[account] * rewardPerTokenDelta) / scale) + rewards[account];
+    }
+
+    /// @notice Calculate when current reward funds will run out.
+    /// @return endTime Timestamp when funds will be exhausted, or 0 if no active rate.
+    function getPeriodEndTime() external view returns (uint256 endTime) {
+        return _calculatePeriodEndTime(rewardRate);
+    }
+
+    /// @notice Calculate required funds for a given reward rate over default period.
+    /// @param rate Reward rate (rewards per second).
+    /// @return requiredFunds Amount of rewards token needed.
+    function calculateRequiredFunds(uint256 rate) external view returns (uint256 requiredFunds) {
+        return _calculateRequiredFunds(rate);
+    }
+
+    /// @notice Get current available rewards balance.
+    function getAvailableRewards() external view returns (uint256) {
+        return rewardsToken.balanceOf(address(this));
+    }
+
+    // ============ Internal Functions ============
+
+    /// @notice Internal: Calculate when funds will run out for given rate.
+    function _calculatePeriodEndTime(uint256 rate) internal view returns (uint256) {
+        if (rate == 0) return 0;
+        uint256 totalAvailableBalance = rewardsToken.balanceOf(address(this));
+        uint256 availableFunds = totalAvailableBalance;
+        if (address(stakingToken) == address(rewardsToken)) {
+            availableFunds = totalAvailableBalance >= totalStaked ? totalAvailableBalance - totalStaked : 0;
+        }
+        if (availableFunds == 0) return block.timestamp;
+        uint256 secondsRemaining = availableFunds / rate;
+        return block.timestamp + secondsRemaining;
+    }
+
+    /// @notice Internal: Calculate required funds for rate over default period.
+    function _calculateRequiredFunds(uint256 rate) internal view returns (uint256) {
+        if (rate == 0) return 0;
+        return rate * DEFAULT_DISTRIBUTION_PERIOD;
+    }
+}
