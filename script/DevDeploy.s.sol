@@ -42,10 +42,12 @@ contract DevDeploy is Script {
         MockERC20 usdc = new MockERC20("USDC", "USDC", 6);
         MockERC20 rewardToken = new MockERC20("REWARD", "REWARD", 18);
         TokenSale sale = new TokenSale(usdc, emyo, address(treasury), admin);
-        StakingRewards staking = new StakingRewards(emyo, rewardToken, admin);
+        // StakingRewards staking = new StakingRewards(emyo, rewardToken, admin);
+        StakingRewards staking = new StakingRewards(emyo, emyo, admin);
 
         uint256 saleTokenAllocation = totalSupply / 5;
         treasury.withdrawERC20(emyo, address(sale), saleTokenAllocation);
+        sale.setTotalCap(saleTokenAllocation);
 
         address[] memory owners = new address[](4);
         owners[0] = admin;

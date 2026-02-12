@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity 0.8.24;
 
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
@@ -21,6 +21,7 @@ contract StakingRewards is AccessControl, Pausable {
     uint8 public immutable rewardsTokenDecimals;
 
     uint256 public rewardRate;
+    uint256 public periodFinish;
     uint256 public lastUpdateTime;
     uint256 public rewardPerTokenStored;
 
@@ -30,6 +31,7 @@ contract StakingRewards is AccessControl, Pausable {
     mapping(address => uint256) public rewards;
 
     uint256 public constant DEFAULT_DISTRIBUTION_PERIOD = 30 days;
+    uint256 public constant MIN_REWARD_DURATION = 1 days;
 
     event RewardRateUpdated(uint256 rate, uint256 periodEndTime);
     event RewardsToppedUp(uint256 amount, uint256 newRate, uint256 periodEndTime);
@@ -50,7 +52,8 @@ contract StakingRewards is AccessControl, Pausable {
 
     modifier updateReward(address account) {
         rewardPerTokenStored = rewardPerToken();
-        lastUpdateTime = block.timestamp;
+        uint256 effectiveTime = (periodFinish > 0 && block.timestamp > periodFinish) ? periodFinish : block.timestamp;
+        lastUpdateTime = effectiveTime;
         if (account != address(0)) {
             rewards[account] = earned(account);
             userRewardPerTokenPaid[account] = rewardPerTokenStored;
@@ -106,7 +109,7 @@ contract StakingRewards is AccessControl, Pausable {
     }
 
     /// @notice Set reward rate (rewards per second).
-    /// @dev Validates that contract has sufficient funds to sustain the rate.
+    /// @dev Validates that contract has sufficient funds to sustain the rate over MIN_REWARD_DURATION.
     /// @param rate Rewards per second (in rewards token units with decimals).
     function setRewardRate(uint256 rate) external onlyRole(Roles.STAKING_ADMIN_ROLE) updateReward(address(0)) {
         if (rate > 0) {
@@ -115,20 +118,19 @@ contract StakingRewards is AccessControl, Pausable {
             if (address(stakingToken) == address(rewardsToken)) {
                 availableFunds = totalAvailableBalance >= totalStaked ? totalAvailableBalance - totalStaked : 0;
             }
-            if (availableFunds < rate) {
-                revert Errors.InvalidParam();
-            }
+            uint256 requiredFunds = rate * MIN_REWARD_DURATION;
+            if (availableFunds < requiredFunds) revert Errors.InvalidParam();
         }
         rewardRate = rate;
         uint256 periodEndTime = rate > 0 ? _calculatePeriodEndTime(rate) : 0;
+        periodFinish = periodEndTime;
         emit RewardRateUpdated(rate, periodEndTime);
     }
 
     /// @notice Top-up rewards and automatically set rate to distribute all available rewards over default period.
     /// @param amount Amount of rewards token to add (already includes decimals).
-    /// @dev After adding amount, calculates rate based on TOTAL available balance (including staked tokens if same token).
-    /// @dev Works correctly when stakingToken == rewardsToken (same token for staking and rewards).
-    function topUpRewards(uint256 amount) external updateReward(address(0)) {
+    /// @dev Restricted to STAKING_ADMIN_ROLE to prevent TRRP - anyone resetting reward policy.
+    function topUpRewards(uint256 amount) external onlyRole(Roles.STAKING_ADMIN_ROLE) updateReward(address(0)) {
         if (amount == 0) revert Errors.ZeroAmount();
         rewardsToken.safeTransferFrom(msg.sender, address(this), amount);
         
@@ -141,6 +143,7 @@ contract StakingRewards is AccessControl, Pausable {
         uint256 newRate = availableRewards / DEFAULT_DISTRIBUTION_PERIOD;
         rewardRate = newRate;
         uint256 periodEndTime = block.timestamp + DEFAULT_DISTRIBUTION_PERIOD;
+        periodFinish = periodEndTime;
         
         emit RewardsToppedUp(amount, newRate, periodEndTime);
     }
@@ -148,9 +151,8 @@ contract StakingRewards is AccessControl, Pausable {
     /// @notice Top-up rewards and set rate to distribute all available rewards over custom period.
     /// @param amount Amount of rewards token to add (already includes decimals).
     /// @param periodSeconds Period in seconds to distribute the rewards.
-    /// @dev After adding amount, calculates rate based on TOTAL available balance (including staked tokens if same token).
-    /// @dev Works correctly when stakingToken == rewardsToken (same token for staking and rewards).
-    function topUpRewardsWithPeriod(uint256 amount, uint256 periodSeconds) external updateReward(address(0)) {
+    /// @dev Restricted to STAKING_ADMIN_ROLE to prevent TRRP.
+    function topUpRewardsWithPeriod(uint256 amount, uint256 periodSeconds) external onlyRole(Roles.STAKING_ADMIN_ROLE) updateReward(address(0)) {
         if (amount == 0) revert Errors.ZeroAmount();
         if (periodSeconds == 0 || periodSeconds < 1 days) revert Errors.InvalidParam();
         rewardsToken.safeTransferFrom(msg.sender, address(this), amount);
@@ -164,6 +166,7 @@ contract StakingRewards is AccessControl, Pausable {
         uint256 newRate = availableRewards / periodSeconds;
         rewardRate = newRate;
         uint256 periodEndTime = block.timestamp + periodSeconds;
+        periodFinish = periodEndTime;
         
         emit RewardsToppedUp(amount, newRate, periodEndTime);
     }
@@ -171,11 +174,15 @@ contract StakingRewards is AccessControl, Pausable {
     // ============ View Functions ============
 
     /// @notice Calculate accumulated reward per token staked.
-    /// @dev Uses rewards token decimals for precision.
+    /// @dev Uses rewards token decimals for precision. Caps at periodFinish (URA fix).
     /// @return Current reward per token (scaled by 10^rewardsTokenDecimals).
     function rewardPerToken() public view returns (uint256) {
         if (totalStaked == 0) return rewardPerTokenStored;
-        uint256 timeElapsed = block.timestamp - lastUpdateTime;
+        uint256 lastTime = lastUpdateTime;
+        uint256 endTime = block.timestamp;
+        if (periodFinish > 0 && endTime > periodFinish) endTime = periodFinish;
+        if (endTime <= lastTime) return rewardPerTokenStored;
+        uint256 timeElapsed = endTime - lastTime;
         uint256 scale = 10**rewardsTokenDecimals;
         return rewardPerTokenStored + ((rewardRate * timeElapsed * scale) / totalStaked);
     }
@@ -202,9 +209,13 @@ contract StakingRewards is AccessControl, Pausable {
         return _calculateRequiredFunds(rate);
     }
 
-    /// @notice Get current available rewards balance.
+    /// @notice Get current available rewards balance (excludes staked principal when stakingToken == rewardsToken).
     function getAvailableRewards() external view returns (uint256) {
-        return rewardsToken.balanceOf(address(this));
+        uint256 balance = rewardsToken.balanceOf(address(this));
+        if (address(stakingToken) == address(rewardsToken) && balance >= totalStaked) {
+            return balance - totalStaked;
+        }
+        return balance;
     }
 
     // ============ Internal Functions ============

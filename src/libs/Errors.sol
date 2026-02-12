@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity 0.8.24;
 
 library Errors {
     error ZeroAddress();
@@ -19,6 +19,9 @@ library Errors {
     error TokensAlreadyReleased();
     error InvalidPeriodLength();
     error SaleNotEnded();
+    error VestStartMustBeAfterStageEnd();
+    error InvalidEmyPriceUsd();
+    error PaymentTokenCannotEqualSaleToken();
 }
 
 

@@ -124,6 +124,12 @@ contract TreasuryTest is Test {
         treasury.withdrawERC20(usdc, beneficiary1, 0);
     }
 
+    function test_WithdrawERC20_RevertIf_AmountExceedsBalance() public {
+        vm.expectRevert(Errors.InsufficientBalance.selector);
+        vm.prank(admin);
+        treasury.withdrawERC20(usdc, beneficiary1, 2_000_000e6);
+    }
+
     function test_SetVestingSchedule_Success() public {
         uint64 nowTs = uint64(block.timestamp);
         uint16[] memory percentages = new uint16[](4);

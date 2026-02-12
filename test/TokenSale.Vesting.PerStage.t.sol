@@ -330,21 +330,20 @@ contract TokenSaleVestingPerStageTest is Test {
     /// @notice Test complex scenario: multiple users, multiple stages, multiple purchases
     function test_Complex_MultipleUsers_MultipleStages_MultiplePurchases() public {
         uint64 nowTs = uint64(block.timestamp);
-        
-        // Stage 0: 4 periods, 25% each, 30 days per period
         uint64 stage0End = nowTs + 7 days;
+        uint64 stage1End = nowTs + 14 days;
         uint64 stage0VestStart = nowTs + 10 days;
+        uint64 stage1VestStart = nowTs + 20 days;
         uint64 stage0PeriodLength = 30 days;
+        uint64 stage1PeriodLength = 20 days;
+        uint64 stage1Start = stage0End + 1;
+
         uint16[] memory percentages0 = new uint16[](4);
         percentages0[0] = 2500;
         percentages0[1] = 2500;
         percentages0[2] = 2500;
         percentages0[3] = 2500;
 
-        // Stage 1: 3 periods, 33.33% each, 20 days per period
-        uint64 stage1End = nowTs + 14 days;
-        uint64 stage1VestStart = nowTs + 20 days;
-        uint64 stage1PeriodLength = 20 days;
         uint16[] memory percentages1 = new uint16[](3);
         percentages1[0] = 3333;
         percentages1[1] = 3333;
@@ -355,31 +354,29 @@ contract TokenSaleVestingPerStageTest is Test {
         sale.addStage(50, stage1End, stage1VestStart, stage1PeriodLength, percentages1);
         vm.stopPrank();
 
-        // Buyer1: buys in Stage 0 twice, then Stage 1 once
-        vm.warp(nowTs + 1 days);
+        vm.warp(stage0End - 6 days);
         vm.prank(buyer1);
-        sale.buy(100e6, new bytes32[](0)); // 100k tokens
-        
-        vm.warp(nowTs + 2 days);
-        vm.prank(buyer1);
-        sale.buy(50e6, new bytes32[](0)); // 50k tokens (summed with first purchase in Stage 0)
-        
-        vm.warp(nowTs + 8 days);
-        vm.prank(buyer1);
-        sale.buy(50e6, new bytes32[](0)); // 100k tokens in Stage 1
+        sale.buy(100e6, new bytes32[](0));
 
-        // Buyer2: buys in Stage 0 once, then Stage 1 twice
-        vm.warp(nowTs + 3 days);
+        vm.warp(stage0End - 5 days);
+        vm.prank(buyer1);
+        sale.buy(50e6, new bytes32[](0));
+
+        vm.warp(stage1Start);
+        vm.prank(buyer1);
+        sale.buy(50e6, new bytes32[](0));
+
+        vm.warp(stage0End - 4 days);
         vm.prank(buyer2);
-        sale.buy(100e6, new bytes32[](0)); // 100k tokens in Stage 0
-        
-        vm.warp(nowTs + 9 days);
+        sale.buy(100e6, new bytes32[](0));
+
+        vm.warp(stage1Start + 1 days);
         vm.prank(buyer2);
-        sale.buy(25e6, new bytes32[](0)); // 50k tokens in Stage 1
-        
-        vm.warp(nowTs + 10 days);
+        sale.buy(25e6, new bytes32[](0));
+
+        vm.warp(stage1Start + 2 days);
         vm.prank(buyer2);
-        sale.buy(25e6, new bytes32[](0)); // 50k tokens (summed with second purchase in Stage 1)
+        sale.buy(25e6, new bytes32[](0));
 
         // Verify Buyer1 schedules
         (uint128 total1_0, , uint64 start1_0, , ) = sale.getVestingSchedule(buyer1, 0);

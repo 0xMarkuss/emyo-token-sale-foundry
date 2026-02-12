@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity 0.8.24;
 
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
@@ -48,6 +48,7 @@ contract TokenSale is AccessControl, Pausable {
     uint256 public totalSold;
     uint256 public totalAllocatedToVesting;
     mapping(address => PurchaseConfig) public userLimits;
+    mapping(address => uint256) public totalPurchasedByUser;
     bytes32 public allowlistMerkleRoot;
     bool public allowlistEnabled;
     mapping(address => mapping(uint256 => VestingLibrary.Schedule)) public vestingSchedules;
@@ -92,6 +93,7 @@ contract TokenSale is AccessControl, Pausable {
         if (address(paymentToken_) == address(0) || address(saleToken_) == address(0) || treasury_ == address(0) || admin == address(0)) {
             revert Errors.ZeroAddress();
         }
+        if (address(paymentToken_) == address(saleToken_)) revert Errors.PaymentTokenCannotEqualSaleToken();
         paymentToken = paymentToken_;
         saleToken = saleToken_;
         treasury = treasury_;
@@ -120,7 +122,7 @@ contract TokenSale is AccessControl, Pausable {
         
         if (allowlistEnabled) {
             if (allowlistMerkleRoot == bytes32(0)) revert Errors.InvalidParam();
-            bytes32 leaf = keccak256(abi.encodePacked(msg.sender));
+            bytes32 leaf = keccak256(abi.encodePacked(block.chainid, address(this), msg.sender));
             if (!MerkleProof.verifyCalldata(merkleProof, allowlistMerkleRoot, leaf)) {
                 revert Errors.NotAuthorized();
             }
@@ -128,18 +130,19 @@ contract TokenSale is AccessControl, Pausable {
 
         PurchaseConfig memory lim = userLimits[msg.sender];
         if (lim.min > 0 && paymentAmount < lim.min) revert Errors.InvalidParam();
-        if (lim.max > 0 && paymentAmount > lim.max) revert Errors.InvalidParam();
+        if (lim.max > 0 && totalPurchasedByUser[msg.sender] + paymentAmount > lim.max) revert Errors.InvalidParam();
 
         uint256 tokensOut = (uint256(paymentAmount) * PRICE_SCALE * decimalScale) / uint256(st.emyPriceUsd);
         if (tokensOut == 0) revert Errors.InvalidParam();
+        if (tokensOut > type(uint128).max) revert Errors.InvalidParam();
         if (totalCap > 0 && totalSold + tokensOut > totalCap) revert Errors.InvalidParam();
-        
+
         uint256 availableBalance = saleToken.balanceOf(address(this));
         if (totalAllocatedToVesting + tokensOut > availableBalance) revert Errors.InsufficientBalance();
 
         totalSold += tokensOut;
         totalAllocatedToVesting += tokensOut;
-        if (tokensOut > type(uint128).max) revert Errors.InvalidParam();
+        totalPurchasedByUser[msg.sender] += paymentAmount;
         _updateVestingSchedule(msg.sender, stageId, uint128(tokensOut), st.vestStart, st.vestPeriodLength, st.vestPercentages);
         paymentToken.safeTransferFrom(msg.sender, treasury, paymentAmount);
 
@@ -175,9 +178,11 @@ contract TokenSale is AccessControl, Pausable {
     ) external onlyRole(Roles.SALE_ADMIN_ROLE) {
         if (stages.length >= MAX_STAGES) revert Errors.MaxStagesReached();
         if (emyPriceUsd == 0 || end == 0) revert Errors.InvalidParam();
+        if (emyPriceUsd > 1e18) revert Errors.InvalidEmyPriceUsd();
+        if (vestStart <= end) revert Errors.VestStartMustBeAfterStageEnd();
         if (vestPeriodLength == 0) revert Errors.InvalidPeriodLength();
         if (!VestingLibrary.validatePercentages(vestPercentages)) revert Errors.InvalidVestingSchedule();
-        if (stages.length == 0 && end <= block.timestamp) revert Errors.InvalidStageTiming();
+        if (end <= block.timestamp) revert Errors.InvalidStageTiming();
         if (stages.length > 0) {
             if (end <= stages[stages.length - 1].end) revert Errors.InvalidParam();
         }
@@ -212,12 +217,12 @@ contract TokenSale is AccessControl, Pausable {
         emit AllowlistEnabledSet(enabled);
     }
 
-    /// @notice Set the total cap for token sales.
+    /// @notice Set the total cap for token sales (absolute lifetime limit).
+    /// @dev Cap cannot exceed tokens available for sale (balance minus vesting allocations).
     function setTotalCap(uint256 cap) external onlyRole(Roles.SALE_ADMIN_ROLE) {
         if (cap == 0) revert Errors.InvalidParam();
         if (cap < totalSold) revert Errors.InvalidParam();
         uint256 availableBalance = saleToken.balanceOf(address(this));
-        if (totalAllocatedToVesting > availableBalance) revert Errors.InsufficientBalance();
         uint256 availableForSale = availableBalance - totalAllocatedToVesting;
         if (cap > availableForSale) revert Errors.InsufficientBalance();
         totalCap = cap;
@@ -364,6 +369,7 @@ contract TokenSale is AccessControl, Pausable {
             s.released += uint128(toRelease);
             remaining -= toRelease;
         }
+        if (remaining != 0) revert Errors.InvalidParam();
         
         if (totalAllocatedToVesting >= amount) {
             totalAllocatedToVesting -= amount;

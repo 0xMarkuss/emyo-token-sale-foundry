@@ -395,19 +395,19 @@ contract TokenSaleTest is Test {
         vm.prank(buyer1);
         sale.buy(50e6, new bytes32[](0)); // Stage 1: 100k tokens (50e6 * 100000 * 1e12 / 50)
 
-        // Check stage 0 schedule
         (uint128 total0, , uint64 start0, uint64 periodLength0, uint16[] memory sched0) = sale.getVestingSchedule(buyer1, 0);
         assertEq(total0, 100_000 ether);
         assertEq(periodLength0, 30 days);
         assertEq(sched0.length, 4);
-        assertEq(start0, nowTs + 4 days);
+        (uint256 _emyPriceUsd0, uint64 _end0, uint64 _vestStart0,) = sale.stages(0);
+        assertEq(start0, _vestStart0);
 
-        // Check stage 1 schedule (separate schedule)
         (uint128 total1, , uint64 start1, uint64 periodLength1, uint16[] memory sched1) = sale.getVestingSchedule(buyer1, 1);
         assertEq(total1, 100_000 ether);
         assertEq(periodLength1, 20 days);
         assertEq(sched1.length, 5);
-        assertEq(start1, nowTs + 5 days);
+        (, uint64 _end1, uint64 _vestStart1,) = sale.stages(1);
+        assertEq(start1, _vestStart1);
     }
 
     function test_SetUserLimits_Success() public {
@@ -454,8 +454,8 @@ contract TokenSaleTest is Test {
         assertEq(sale.totalCap(), 1_000_000 ether);
     }
 
-    /// @notice Test that setTotalCap accounts for vesting allocations
-    function test_SetTotalCap_AccountsForVestingAllocations() public {
+    /// @notice ICS fix: setTotalCap uses absolute lifetime limit (cap >= totalSold)
+    function test_SetTotalCap_ICS_AbsoluteLifetimeLimit() public {
         uint64 nowTs = uint64(block.timestamp);
         uint16[] memory percentages = new uint16[](4);
         percentages[0] = 2500;
@@ -466,25 +466,19 @@ contract TokenSaleTest is Test {
         vm.prank(admin);
         sale.addStage(100, nowTs + 7 days, nowTs + 10 days, 30 days, percentages);
 
-        // Transfer 1M tokens to sale contract
         vm.prank(admin);
         treasury.withdrawERC20(saleToken, address(sale), 1_000_000 ether);
 
-        // User purchases 500k tokens (allocated to vesting)
         vm.prank(buyer1);
         sale.buy(500e6, new bytes32[](0));
 
-        // Contract has 6M tokens (5M from setUp + 1M transferred)
-        // But 500k are allocated to vesting, so only 5.5M available for sale
-        // Should be able to set cap to 5.5M
         vm.prank(admin);
-        sale.setTotalCap(5_500_000 ether);
-        assertEq(sale.totalCap(), 5_500_000 ether);
+        sale.setTotalCap(500_000 ether);
+        assertEq(sale.totalCap(), 500_000 ether);
 
-        // Should NOT be able to set cap to 6M (exceeds available)
-        vm.expectRevert(Errors.InsufficientBalance.selector);
+        vm.expectRevert(Errors.InvalidParam.selector);
         vm.prank(admin);
-        sale.setTotalCap(6_000_000 ether);
+        sale.setTotalCap(400_000 ether);
     }
 
     function test_SetTotalCap_RevertIf_Zero() public {
@@ -511,6 +505,29 @@ contract TokenSaleTest is Test {
         vm.expectRevert(Errors.InvalidParam.selector);
         vm.prank(admin);
         sale.setTotalCap(50_000 ether); // Below 100k sold
+    }
+
+    function test_SetTotalCap_RevertIf_AboveAvailableForSale() public {
+        uint64 nowTs = uint64(block.timestamp);
+        uint16[] memory percentages = new uint16[](4);
+        percentages[0] = 2500;
+        percentages[1] = 2500;
+        percentages[2] = 2500;
+        percentages[3] = 2500;
+
+        vm.startPrank(admin);
+        sale.addStage(100, nowTs + 7 days, nowTs + 10 days, 30 days, percentages);
+        vm.stopPrank();
+
+        vm.prank(buyer1);
+        sale.buy(3000e6, new bytes32[](0)); // 3M tokens at price 100
+        assertEq(sale.totalAllocatedToVesting(), 3_000_000 ether);
+        assertEq(saleToken.balanceOf(address(sale)), 5_000_000 ether);
+        assertEq(sale.totalSold(), 3_000_000 ether);
+
+        vm.expectRevert(Errors.InsufficientBalance.selector);
+        vm.prank(admin);
+        sale.setTotalCap(4_000_000 ether); // Available for sale = 5M - 3M = 2M
     }
 
     function test_Release_Success() public {
@@ -828,14 +845,12 @@ contract TokenSaleTest is Test {
         percentages[2] = 2500;
         percentages[3] = 2500;
 
-        // Create stage with very high price
         vm.prank(admin);
-        sale.addStage(type(uint256).max, nowTs + 7 days, nowTs + 10 days, 30 days, percentages);
+        sale.addStage(1e18, nowTs + 7 days, nowTs + 10 days, 30 days, percentages);
 
-        // Small payment should result in 0 tokens due to precision loss
         vm.expectRevert(Errors.InvalidParam.selector);
         vm.prank(buyer1);
-        sale.buy(1, new bytes32[](0)); // 1 wei - should revert with zero tokens
+        sale.buy(1, new bytes32[](0));
     }
 
     /// @notice HIGH #7: Test that stage end time must be in future

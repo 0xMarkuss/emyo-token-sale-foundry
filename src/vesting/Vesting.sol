@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity 0.8.24;
 
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
@@ -20,6 +20,7 @@ contract Vesting is AccessControl, Pausable, IVesting {
     IERC20 public immutable token;
 
     mapping(address => IVesting.Schedule) internal _schedules;
+    uint256 internal _totalObligations;
 
     uint64 public defaultStartDelay;
     uint64 public defaultPeriodLength;
@@ -62,6 +63,7 @@ contract Vesting is AccessControl, Pausable, IVesting {
         if (amount > type(uint128).max) revert Errors.InvalidParam();
         if (s.released > type(uint128).max - uint128(amount)) revert Errors.InvalidParam();
         s.released += uint128(amount);
+        _totalObligations -= amount;
         token.safeTransfer(beneficiary, amount);
         emit TokensReleased(beneficiary, amount);
     }
@@ -153,8 +155,12 @@ contract Vesting is AccessControl, Pausable, IVesting {
         if (periodLength == 0) revert Errors.InvalidParam();
         if (!VestingLibrary.validatePercentages(percentages)) revert Errors.InvalidParam();
         
+        uint256 contractBalance = token.balanceOf(address(this));
+        if (_totalObligations + amount > contractBalance) revert Errors.InsufficientBalance();
+        
         IVesting.Schedule storage s = _schedules[beneficiary];
         if (s.total == 0) {
+            if (start < block.timestamp) revert Errors.InvalidParam();
             s.start = start;
             s.periodLength = periodLength;
             s.percentages = percentages;
@@ -167,6 +173,7 @@ contract Vesting is AccessControl, Pausable, IVesting {
             if (s.total > type(uint128).max - amount) revert Errors.InvalidParam();
         }
         s.total += amount;
+        _totalObligations += amount;
         emit ScheduleCreated(beneficiary, amount, start, periodLength, percentages);
     }
 

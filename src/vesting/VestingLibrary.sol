@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity 0.8.24;
 
 /// @title VestingLibrary
 /// @notice Library for schedule-based vesting calculations
@@ -45,10 +45,13 @@ library VestingLibrary {
         return vested - s.released;
     }
 
+    uint256 internal constant MAX_PERCENTAGES_LENGTH = 100;
+
     /// @notice Validate schedule percentages sum to 10000 (100%)
     /// @param percentages Array of percentages in basis points
     /// @return valid True if percentages sum to 10000
     function validatePercentages(uint16[] memory percentages) internal pure returns (bool) {
+        if (percentages.length == 0 || percentages.length > MAX_PERCENTAGES_LENGTH) return false;
         uint256 sum = 0;
         for (uint256 i = 0; i < percentages.length; i++) {
             sum += percentages[i];

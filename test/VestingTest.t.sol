@@ -406,7 +406,7 @@ contract VestingTest is Test {
     }
 
     function testFuzz_Allocate_ValidAmount(uint128 amount) public {
-        amount = uint128(bound(amount, 1, 10_000_000 ether));
+        amount = uint128(bound(amount, 1, 5_000_000 ether));
         vm.prank(admin);
         vesting.allocate(beneficiary1, amount);
 

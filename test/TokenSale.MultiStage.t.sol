@@ -51,15 +51,18 @@ contract TokenSaleMultiStageTest is Test {
     /// Each purchase creates a separate vesting schedule per stage
     function test_Buy_Stage1_ThenStage2_ThenStage3_AggregatesSchedule() public {
         uint64 nowTs = uint64(block.timestamp);
-        
-        // Stage 1: 4 periods, 25% each, 30 days per period
+        uint64 stage0End = nowTs + 1 days;
+        uint64 stage1End = nowTs + 2 days;
+        uint64 stage2End = nowTs + 3 days;
+        uint64 stage1Start = stage0End + 1;
+        uint64 stage2Start = stage1End + 1;
+
         uint16[] memory percentages1 = new uint16[](4);
         percentages1[0] = 2500;
         percentages1[1] = 2500;
         percentages1[2] = 2500;
         percentages1[3] = 2500;
 
-        // Stage 2: 5 periods, 20% each, 20 days per period
         uint16[] memory percentages2 = new uint16[](5);
         percentages2[0] = 2000;
         percentages2[1] = 2000;
@@ -67,7 +70,6 @@ contract TokenSaleMultiStageTest is Test {
         percentages2[3] = 2000;
         percentages2[4] = 2000;
 
-        // Stage 3: 3 periods, 33.33% each, 15 days per period
         uint16[] memory percentages3 = new uint16[](3);
         percentages3[0] = 3333;
         percentages3[1] = 3333;
@@ -78,43 +80,36 @@ contract TokenSaleMultiStageTest is Test {
         uint64 vestStart3 = nowTs + 6 days;
 
         vm.startPrank(admin);
-        sale.addStage(100, nowTs + 1 days, vestStart1, 30 days, percentages1);
-        sale.addStage(50, nowTs + 2 days, vestStart2, 20 days, percentages2);
-        sale.addStage(33, nowTs + 3 days, vestStart3, 15 days, percentages3);
+        sale.addStage(100, stage0End, vestStart1, 30 days, percentages1);
+        sale.addStage(50, stage1End, vestStart2, 20 days, percentages2);
+        sale.addStage(33, stage2End, vestStart3, 15 days, percentages3);
         vm.stopPrank();
 
-        // Purchase in Stage 1: 100 USDC => 100k tokens
         vm.prank(buyer1);
         sale.buy(100e6, new bytes32[](0));
 
-        (uint128 total1, , uint64 start1, uint64 periodLength1, uint16[] memory sched1) = 
+        (uint128 total1, , uint64 start1, uint64 periodLength1, uint16[] memory sched1) =
             sale.getVestingSchedule(buyer1, 0);
         assertEq(total1, 100_000 ether);
         assertEq(start1, vestStart1);
         assertEq(periodLength1, 30 days);
         assertEq(sched1.length, 4);
 
-        // Move to Stage 2
-        vm.warp(nowTs + 1 days + 1);
-        
-        // Purchase in Stage 2: 50 USDC => 100k tokens (50 * 100000 * 1e12 / 50)
+        vm.warp(stage1Start);
         vm.prank(buyer1);
         sale.buy(50e6, new bytes32[](0));
 
-        // Stage 2 creates a separate schedule
-        (uint128 total2, , uint64 start2, uint64 periodLength2, uint16[] memory sched2) = 
+        (uint128 total2, , uint64 start2, uint64 periodLength2, uint16[] memory sched2) =
             sale.getVestingSchedule(buyer1, 1);
-        assertEq(total2, 100_000 ether); // 50e6 * 100000 * 1e12 / 50 = 100k tokens
+        assertEq(total2, 100_000 ether);
         assertEq(start2, vestStart2);
         assertEq(periodLength2, 20 days);
         assertEq(sched2.length, 5);
 
-        // Stage 0 schedule unchanged
         (uint128 total0, , , , ) = sale.getVestingSchedule(buyer1, 0);
         assertEq(total0, 100_000 ether);
 
-        // Move to Stage 3
-        vm.warp(nowTs + 2 days + 1);
+        vm.warp(stage2Start);
         
         // Purchase in Stage 3: Calculate exact payment to get 100k tokens
         paymentToken.mint(buyer1, 100e6);
@@ -175,25 +170,26 @@ contract TokenSaleMultiStageTest is Test {
         sale.addStage(33, nowTs + 3 days, vestStart3, 15 days, percentages3);
         vm.stopPrank();
 
-        // Skip Stage 1, purchase in Stage 2 first
-        vm.warp(nowTs + 1 days + 1);
-        vm.prank(buyer2);
-        sale.buy(100e6, new bytes32[](0)); // 200k tokens
+        uint64 stage0End = nowTs + 1 days;
+        uint64 stage1End = nowTs + 2 days;
+        uint64 stage1Start = stage0End + 1;
+        uint64 stage2Start = stage1End + 1;
 
-        // Stage 2 creates schedule at stageId 1 (not 0)
-        (uint128 total, , uint64 start, uint64 periodLength, uint16[] memory sched) = 
+        vm.warp(stage1Start);
+        vm.prank(buyer2);
+        sale.buy(100e6, new bytes32[](0));
+
+        (uint128 total, , uint64 start, uint64 periodLength, uint16[] memory sched) =
             sale.getVestingSchedule(buyer2, 1);
         assertEq(total, 200_000 ether);
         assertEq(start, vestStart2);
         assertEq(periodLength, 20 days);
         assertEq(sched.length, 5);
 
-        // Stage 0 doesn't exist for this user
         (uint128 total0, , , , ) = sale.getVestingSchedule(buyer2, 0);
         assertEq(total0, 0);
 
-        // Move to Stage 3
-        vm.warp(nowTs + 2 days + 1);
+        vm.warp(stage2Start);
         uint256 paymentAmount3_2 = (150_000 ether * 33) / (sale.PRICE_SCALE() * sale.decimalScale());
         vm.prank(buyer2);
         sale.buy(uint128(paymentAmount3_2), new bytes32[](0));
@@ -233,7 +229,9 @@ contract TokenSaleMultiStageTest is Test {
     /// Each user should have their own schedule based on their first purchase stage
     function test_MultipleUsers_DifferentStages_DifferentSchedules() public {
         uint64 nowTs = uint64(block.timestamp);
-        
+        uint64 stage0End = nowTs + 1 days;
+        uint64 stage1Start = stage0End + 1;
+
         uint16[] memory percentages1 = new uint16[](4);
         percentages1[0] = 2500;
         percentages1[1] = 2500;
@@ -250,30 +248,25 @@ contract TokenSaleMultiStageTest is Test {
         uint64 vestStart1 = nowTs + 4 days;
         uint64 vestStart2 = nowTs + 5 days;
         vm.startPrank(admin);
-        sale.addStage(100, nowTs + 1 days, vestStart1, 30 days, percentages1);
+        sale.addStage(100, stage0End, vestStart1, 30 days, percentages1);
         sale.addStage(50, nowTs + 2 days, vestStart2, 20 days, percentages2);
         vm.stopPrank();
 
-        // Buyer1 purchases in Stage 1
-        uint64 purchaseTime1 = uint64(block.timestamp);
         vm.prank(buyer1);
-        sale.buy(100e6, new bytes32[](0)); // 100k tokens
+        sale.buy(100e6, new bytes32[](0));
 
-        // Buyer2 purchases in Stage 2 (skips Stage 1)
-        vm.warp(nowTs + 1 days + 1);
-        uint64 purchaseTime2 = uint64(block.timestamp);
+        vm.warp(stage1Start);
         vm.prank(buyer2);
-        sale.buy(100e6, new bytes32[](0)); // 200k tokens
+        sale.buy(100e6, new bytes32[](0));
 
-        // Buyer3 purchases in Stage 1, then Stage 2
-        vm.warp(nowTs);
-        uint64 purchaseTime3 = uint64(block.timestamp);
+        uint64 stage0Time = stage0End - 1 days + 1;
+        vm.warp(stage0Time);
         vm.prank(buyer3);
-        sale.buy(50e6, new bytes32[](0)); // 50k tokens
+        sale.buy(50e6, new bytes32[](0));
 
-        vm.warp(nowTs + 1 days + 1);
+        vm.warp(stage1Start);
         vm.prank(buyer3);
-        sale.buy(50e6, new bytes32[](0)); // 100k tokens
+        sale.buy(50e6, new bytes32[](0));
 
         // Check buyer1 schedule (Stage 1)
         (uint128 total1, , uint64 start1, uint64 periodLength1, uint16[] memory sched1) = 
@@ -287,7 +280,7 @@ contract TokenSaleMultiStageTest is Test {
         (uint128 total2, , uint64 start2, uint64 periodLength2, uint16[] memory sched2) = 
             sale.getVestingSchedule(buyer2, 1);
         assertEq(total2, 200_000 ether);
-        assertEq(start2, nowTs + 5 days); // Stage 2 vestStart
+        assertEq(start2, vestStart2);
         assertEq(periodLength2, 20 days);
         assertEq(sched2.length, 5);
 
@@ -345,7 +338,12 @@ contract TokenSaleMultiStageTest is Test {
     /// Each purchase creates a separate vesting schedule per stage
     function test_Buy_DifferentPrices_AggregatesTokens() public {
         uint64 nowTs = uint64(block.timestamp);
-        
+        uint64 stage0End = nowTs + 1 days;
+        uint64 stage1End = nowTs + 2 days;
+        uint64 stage2End = nowTs + 3 days;
+        uint64 stage1Start = stage0End + 1;
+        uint64 stage2Start = stage1End + 1;
+
         uint16[] memory percentages = new uint16[](4);
         percentages[0] = 2500;
         percentages[1] = 2500;
@@ -353,22 +351,19 @@ contract TokenSaleMultiStageTest is Test {
         percentages[3] = 2500;
 
         vm.startPrank(admin);
-        sale.addStage(100, nowTs + 1 days, nowTs + 4 days, 30 days, percentages); // 1000 tokens/USDC
-        sale.addStage(200, nowTs + 2 days, nowTs + 5 days, 30 days, percentages); // 500 tokens/USDC (cheaper)
-        sale.addStage(50, nowTs + 3 days, nowTs + 6 days, 30 days, percentages); // 2000 tokens/USDC (more expensive)
+        sale.addStage(100, stage0End, nowTs + 4 days, 30 days, percentages);
+        sale.addStage(200, stage1End, nowTs + 5 days, 30 days, percentages);
+        sale.addStage(50, stage2End, nowTs + 6 days, 30 days, percentages);
         vm.stopPrank();
 
-        // Stage 1: 100 USDC => 100k tokens
         vm.prank(buyer1);
         sale.buy(100e6, new bytes32[](0));
 
-        // Stage 2: 200 USDC => 100k tokens (cheaper price)
-        vm.warp(nowTs + 1 days + 1);
+        vm.warp(stage1Start);
         vm.prank(buyer1);
         sale.buy(200e6, new bytes32[](0));
 
-        // Stage 3: 50 USDC => 100k tokens (more expensive price)
-        vm.warp(nowTs + 2 days + 1);
+        vm.warp(stage2Start);
         vm.prank(buyer1);
         sale.buy(50e6, new bytes32[](0));
 
@@ -426,13 +421,13 @@ contract TokenSaleMultiStageTest is Test {
         sale.buy(100e6, new bytes32[](0));
     }
 
-    /// @notice Build Merkle tree and return root
-    function _buildMerkleTree(address[] memory addresses) internal pure returns (bytes32) {
+    /// @notice Build Merkle tree and return root (MDS: domain separation)
+    function _buildMerkleTree(address[] memory addresses) internal view returns (bytes32) {
         if (addresses.length == 0) return bytes32(0);
         
         bytes32[] memory leaves = new bytes32[](addresses.length);
         for (uint256 i = 0; i < addresses.length; i++) {
-            leaves[i] = keccak256(abi.encodePacked(addresses[i]));
+            leaves[i] = keccak256(abi.encodePacked(block.chainid, address(sale), addresses[i]));
         }
         
         return _computeRoot(leaves);
@@ -462,11 +457,11 @@ contract TokenSaleMultiStageTest is Test {
         return a < b ? keccak256(abi.encodePacked(a, b)) : keccak256(abi.encodePacked(b, a));
     }
 
-    /// @notice Get Merkle proof for an address
-    function _getProof(address[] memory addresses, address target) internal pure returns (bytes32[] memory) {
+    /// @notice Get Merkle proof for an address (MDS: domain separation)
+    function _getProof(address[] memory addresses, address target) internal view returns (bytes32[] memory) {
         bytes32[] memory leaves = new bytes32[](addresses.length);
         for (uint256 i = 0; i < addresses.length; i++) {
-            leaves[i] = keccak256(abi.encodePacked(addresses[i]));
+            leaves[i] = keccak256(abi.encodePacked(block.chainid, address(sale), addresses[i]));
         }
         
         uint256 index = 0;
@@ -563,7 +558,10 @@ contract TokenSaleMultiStageTest is Test {
     /// @notice Test complex scenario: multiple users, multiple stages, different purchase patterns
     function test_Complex_MultipleUsers_MultipleStages_DifferentPatterns() public {
         uint64 nowTs = uint64(block.timestamp);
-        
+        uint64 stage0End = nowTs + 1 days;
+        uint64 stage1End = nowTs + 2 days;
+        uint64 stage1Start = stage0End + 1;
+
         uint16[] memory percentages1 = new uint16[](4);
         percentages1[0] = 2500;
         percentages1[1] = 2500;
@@ -579,31 +577,29 @@ contract TokenSaleMultiStageTest is Test {
         percentages2[5] = 1665;
 
         vm.startPrank(admin);
-        sale.addStage(100, nowTs + 1 days, nowTs + 4 days, 30 days, percentages1);
-        sale.addStage(50, nowTs + 2 days, nowTs + 5 days, 20 days, percentages2);
+        sale.addStage(100, stage0End, nowTs + 4 days, 30 days, percentages1);
+        sale.addStage(50, stage1End, nowTs + 5 days, 20 days, percentages2);
         sale.setTotalCap(1_000_000 ether);
         vm.stopPrank();
 
-        // Buyer1: Purchases in Stage 1 only
+        uint64 stage0Time = stage0End - 1 days + 1;
+        vm.warp(stage0Time);
         vm.prank(buyer1);
-        sale.buy(200e6, new bytes32[](0)); // 200k tokens
+        sale.buy(200e6, new bytes32[](0));
 
-        // Buyer2: Purchases in Stage 2 only
-        vm.warp(nowTs + 1 days + 1);
+        vm.warp(stage1Start);
         vm.prank(buyer2);
-        sale.buy(100e6, new bytes32[](0)); // 200k tokens
+        sale.buy(100e6, new bytes32[](0));
 
-        // Buyer3: Purchases in both stages
-        vm.warp(nowTs);
+        vm.warp(stage0Time);
         vm.prank(buyer3);
-        sale.buy(100e6, new bytes32[](0)); // 100k tokens in Stage 1
+        sale.buy(100e6, new bytes32[](0));
 
-        vm.warp(nowTs + 1 days + 1);
+        vm.warp(stage1Start);
         vm.prank(buyer3);
-        sale.buy(50e6, new bytes32[](0)); // 100k tokens in Stage 2
+        sale.buy(50e6, new bytes32[](0));
 
-        // Verify totals
-        assertEq(sale.totalSold(), 600_000 ether); // 200k + 200k + 100k + 100k
+        assertEq(sale.totalSold(), 600_000 ether);
 
         // Verify schedules
         (uint128 total1, , , uint64 periodLength1, uint16[] memory sched1) = 
@@ -632,7 +628,7 @@ contract TokenSaleMultiStageTest is Test {
         assertEq(sched3_1.length, 6);
     }
 
-    /// @notice Test that totalCap validation works correctly with token balance
+    /// @notice ICS fix: setTotalCap uses absolute lifetime limit
     function test_TotalCap_ValidatesAgainstTokenBalance() public {
         uint64 nowTs = uint64(block.timestamp);
         
@@ -645,23 +641,12 @@ contract TokenSaleMultiStageTest is Test {
         vm.prank(admin);
         sale.addStage(100, nowTs + 7 days, nowTs + 10 days, 30 days, percentages);
 
-        // Contract has 5M tokens
-        assertEq(saleToken.balanceOf(address(sale)), 5_000_000 ether);
-
-        // Can set cap up to balance
         vm.prank(admin);
         sale.setTotalCap(5_000_000 ether);
 
-        // Cannot set cap above balance (accounting for vesting allocations)
-        vm.expectRevert(Errors.InsufficientBalance.selector);
-        vm.prank(admin);
-        sale.setTotalCap(6_000_000 ether);
-
-        // Purchase some tokens
         vm.prank(buyer1);
-        sale.buy(100e6, new bytes32[](0)); // 100k tokens
+        sale.buy(100e6, new bytes32[](0));
 
-        // Cannot set cap below totalSold
         vm.expectRevert(Errors.InvalidParam.selector);
         vm.prank(admin);
         sale.setTotalCap(50_000 ether);

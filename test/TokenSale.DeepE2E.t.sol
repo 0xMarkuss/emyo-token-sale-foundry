@@ -64,71 +64,70 @@ contract TokenSaleDeepE2ETest is Test {
     /// Stage 3: 1 month, 3 months vesting [33.33, 33.33, 33.34] (3 periods)
     function test_DeepE2E_ThreeStages_MultipleUsers_ComplexVesting() public {
         uint64 nowTs = uint64(block.timestamp);
-        
-        // Stage 1: 1 week long, 8 months vesting (8 periods of 1 month each)
+        uint64 stage0End = nowTs + 7 days;
+        uint64 stage1End = nowTs + 21 days;
+        uint64 stage2End = nowTs + 51 days;
+        uint64 stage1Start = stage0End + 1;
+        uint64 stage2Start = stage1End + 1;
+
         uint16[] memory percentages1 = new uint16[](8);
         percentages1[0] = 1000; percentages1[1] = 1000; percentages1[2] = 1000; percentages1[3] = 1000;
         percentages1[4] = 1000; percentages1[5] = 1000; percentages1[6] = 2000; percentages1[7] = 2000;
 
-        // Stage 2: 2 weeks long, 6 months vesting
         uint16[] memory percentages2 = new uint16[](6);
         percentages2[0] = 1667; percentages2[1] = 1667; percentages2[2] = 1667;
         percentages2[3] = 1667; percentages2[4] = 1667; percentages2[5] = 1665;
 
-        // Stage 3: 1 month long, 3 months vesting
         uint16[] memory percentages3 = new uint16[](3);
         percentages3[0] = 3333; percentages3[1] = 3333; percentages3[2] = 3334;
 
-        uint64 vestStart0 = nowTs + 7 days + 3 days;
-        uint64 vestStart1 = nowTs + 21 days + 3 days;
-        uint64 vestStart2 = nowTs + 51 days + 3 days;
+        uint64 vestStart0 = stage0End + 3 days;
+        uint64 vestStart1 = stage1End + 3 days;
+        uint64 vestStart2 = stage2End + 3 days;
         vm.startPrank(admin);
-        sale.addStage(100, nowTs + 7 days, vestStart0, 30 days, percentages1);
-        sale.addStage(50, nowTs + 21 days, vestStart1, 30 days, percentages2);
-        sale.addStage(33, nowTs + 51 days, vestStart2, 30 days, percentages3);
+        sale.addStage(100, stage0End, vestStart0, 30 days, percentages1);
+        sale.addStage(50, stage1End, vestStart1, 30 days, percentages2);
+        sale.addStage(33, stage2End, vestStart2, 30 days, percentages3);
         sale.setTotalCap(3_000_000 ether);
         vm.stopPrank();
 
-        // Buyer1: Purchases in Stage 0, then Stage 1, then Stage 2 (creates 3 separate schedules)
-        vm.warp(nowTs + 7 days - 1);
+        vm.warp(stage0End - 1);
         vm.prank(buyer1);
-        sale.buy(100e6, new bytes32[](0)); // 100k tokens in stage 0
+        sale.buy(100e6, new bytes32[](0));
 
-        vm.warp(nowTs + 7 days + 1);
+        vm.warp(stage1Start);
         vm.prank(buyer1);
-        sale.buy(50e6, new bytes32[](0)); // 200k tokens in stage 1 (50e6 * 100000 * 1e12 / 50)
+        sale.buy(50e6, new bytes32[](0));
 
-        vm.warp(nowTs + 21 days + 1);
+        vm.warp(stage2Start);
         vm.prank(buyer1);
-        sale.buy(33e6, new bytes32[](0)); // 100k tokens in stage 2 (33e6 * 100000 * 1e12 / 33)
+        sale.buy(33e6, new bytes32[](0));
 
-        // Buyer2: Purchases only in Stage 1
-        vm.warp(nowTs + 7 days + 1);
+        vm.warp(stage1Start);
         vm.prank(buyer2);
-        sale.buy(200e6, new bytes32[](0)); // 400k tokens in stage 1
+        sale.buy(200e6, new bytes32[](0));
 
-        // Buyer3: Purchases in Stage 0 and Stage 2
-        vm.warp(nowTs);
+        uint64 stage0Time = stage0End - 6 days;
+        vm.warp(stage0Time);
         vm.prank(buyer3);
-        sale.buy(150e6, new bytes32[](0)); // 150k tokens in stage 0
+        sale.buy(150e6, new bytes32[](0));
 
-        vm.warp(nowTs + 21 days + 1);
+        vm.warp(stage2Start);
         uint256 paymentFor75k = (75_000 ether * 33) / (sale.PRICE_SCALE() * sale.decimalScale());
         vm.prank(buyer3);
-        sale.buy(uint128(paymentFor75k), new bytes32[](0)); // 75k tokens in stage 2
+        sale.buy(uint128(paymentFor75k), new bytes32[](0));
 
-        // Buyer4: Purchases multiple times in Stage 0 (aggregates in same schedule)
-        vm.warp(nowTs);
+        vm.warp(stage0Time);
         vm.startPrank(buyer4);
-        sale.buy(50e6, new bytes32[](0)); // 50k tokens
-        sale.buy(30e6, new bytes32[](0)); // 30k tokens
-        sale.buy(20e6, new bytes32[](0)); // 20k tokens
+        sale.buy(50e6, new bytes32[](0));
+        sale.buy(30e6, new bytes32[](0));
+        sale.buy(20e6, new bytes32[](0));
         vm.stopPrank();
 
-        // Buyer5: Purchases at the very end of Stage 2
-        vm.warp(nowTs + 51 days - 1);
+        uint64 buyer5Warp = stage2Start + 1 days;
+        vm.warp(buyer5Warp);
         vm.prank(buyer5);
-        sale.buy(100e6, new bytes32[](0)); // ~303k tokens in stage 2 (100e6 * 100000 * 1e12 / 33)
+        sale.buy(100e6, new bytes32[](0));
 
         // Verify buyer1 schedules (3 separate schedules - one per stage)
         (uint128 total1_0, , uint64 start1_0, uint64 periodLength1_0, uint16[] memory sched1_0) = 
@@ -267,7 +266,9 @@ contract TokenSaleDeepE2ETest is Test {
     /// @notice Test edge case: User purchases at exact stage boundaries
     function test_DeepE2E_PurchaseAtStageBoundaries() public {
         uint64 nowTs = uint64(block.timestamp);
-        
+        uint64 stage1End = nowTs + 7 days;
+        uint64 stage2End = nowTs + 14 days;
+
         uint16[] memory percentages = new uint16[](4);
         percentages[0] = 2500;
         percentages[1] = 2500;
@@ -275,25 +276,22 @@ contract TokenSaleDeepE2ETest is Test {
         percentages[3] = 2500;
 
         vm.startPrank(admin);
-        sale.addStage(100, nowTs + 7 days, nowTs + 7 days + 3 days, 30 days, percentages);
-        sale.addStage(50, nowTs + 14 days, nowTs + 14 days + 3 days, 30 days, percentages);
+        sale.addStage(100, stage1End, stage1End + 3 days, 30 days, percentages);
+        sale.addStage(50, stage2End, stage2End + 3 days, 30 days, percentages);
         vm.stopPrank();
 
-        // Purchase exactly at Stage 1 end
-        vm.warp(nowTs + 7 days);
+        vm.warp(stage1End);
         vm.prank(buyer1);
-        sale.buy(100e6, new bytes32[](0)); // Should succeed - still in Stage 1
+        sale.buy(100e6, new bytes32[](0));
 
-        // Purchase exactly at Stage 2 start
-        vm.warp(nowTs + 7 days + 1);
+        vm.warp(stage1End + 1);
         vm.prank(buyer2);
-        sale.buy(100e6, new bytes32[](0)); // Should succeed - in Stage 2
+        sale.buy(100e6, new bytes32[](0));
 
-        // Try to purchase after Stage 2 ends
-        vm.warp(nowTs + 14 days + 1);
+        vm.warp(stage2End + 1);
         vm.expectRevert(Errors.NotStarted.selector);
         vm.prank(buyer3);
-        sale.buy(100e6, new bytes32[](0)); // Should fail - no active stage
+        sale.buy(100e6, new bytes32[](0));
     }
 
     /// @notice Test scenario: Total cap reached across multiple stages
@@ -339,59 +337,57 @@ contract TokenSaleDeepE2ETest is Test {
     /// @notice Test scenario: Pause/unpause during multi-stage sale
     function test_DeepE2E_PauseUnpauseDuringMultiStage() public {
         uint64 nowTs = uint64(block.timestamp);
-        
+        uint64 stage0End = nowTs + 1 days;
+        uint64 stage1End = nowTs + 2 days;
+        uint64 stage1Start = stage0End + 1;
+        uint64 vestStart1 = stage0End + 3 days;
+
         uint16[] memory percentages = new uint16[](4);
         percentages[0] = 2500;
         percentages[1] = 2500;
         percentages[2] = 2500;
         percentages[3] = 2500;
 
-        uint64 vestStart1 = nowTs + 1 days + 3 days;
         vm.startPrank(admin);
-        sale.addStage(100, nowTs + 1 days, vestStart1, 30 days, percentages);
-        sale.addStage(50, nowTs + 2 days, nowTs + 2 days + 3 days, 30 days, percentages);
+        sale.addStage(100, stage0End, vestStart1, 30 days, percentages);
+        sale.addStage(50, stage1End, stage1End + 3 days, 30 days, percentages);
         vm.stopPrank();
 
-        // Purchase in Stage 0
         vm.prank(buyer1);
         sale.buy(100e6, new bytes32[](0));
 
-        // Pause
         vm.prank(admin);
         sale.pause();
 
-        // Cannot purchase in Stage 1 (while paused)
-        vm.warp(nowTs + 1 days + 1);
+        vm.warp(stage1Start);
         vm.expectRevert();
         vm.prank(buyer2);
         sale.buy(100e6, new bytes32[](0));
 
-        // Cannot release while paused (warp to vestStart + 30 days)
         vm.warp(vestStart1 + 30 days);
         vm.expectRevert();
         vm.prank(buyer1);
         sale.release();
 
-        // Unpause
         vm.prank(admin);
         sale.unpause();
 
-        // Can purchase in Stage 1 (still within stage end time)
-        vm.warp(nowTs + 1 days + 1); // Make sure we're still in Stage 1
+        vm.warp(stage1Start);
         vm.prank(buyer2);
         sale.buy(100e6, new bytes32[](0));
 
-        // Can release (period 0 vested after vestStart + 30 days)
-        vm.warp(vestStart1 + 30 days); // Ensure we're at vestStart + 30 days
+        vm.warp(vestStart1 + 30 days);
         vm.prank(buyer1);
         sale.release();
-        assertEq(saleToken.balanceOf(buyer1), 25_000 ether); // 25% of 100k
+        assertEq(saleToken.balanceOf(buyer1), 25_000 ether);
     }
 
-    /// @notice Test scenario: User limits change between stages
+    /// @notice Test scenario: User limits change between stages (max is lifetime cap per ILR)
     function test_DeepE2E_UserLimitsChangeBetweenStages() public {
         uint64 nowTs = uint64(block.timestamp);
-        
+        uint64 stage0End = nowTs + 1 days;
+        uint64 stage1Start = stage0End + 1;
+
         uint16[] memory percentages = new uint16[](4);
         percentages[0] = 2500;
         percentages[1] = 2500;
@@ -399,28 +395,22 @@ contract TokenSaleDeepE2ETest is Test {
         percentages[3] = 2500;
 
         vm.startPrank(admin);
-        sale.addStage(100, nowTs + 1 days, nowTs + 1 days + 3 days, 30 days, percentages);
+        sale.addStage(100, stage0End, stage0End + 3 days, 30 days, percentages);
         sale.addStage(50, nowTs + 2 days, nowTs + 2 days + 3 days, 30 days, percentages);
         sale.setUserLimits(buyer1, 50e6, 150e6);
         vm.stopPrank();
 
-        // Stage 1: Purchase within limits
         vm.prank(buyer1);
         sale.buy(100e6, new bytes32[](0));
 
-        // Admin changes limits
         vm.prank(admin);
-        sale.setUserLimits(buyer1, 10e6, 50e6); // Lower max
+        sale.setUserLimits(buyer1, 10e6, 150e6);
 
-        // Move to Stage 2
-        vm.warp(nowTs + 1 days + 1);
-        
-        // Cannot purchase above new max
+        vm.warp(stage1Start);
         vm.expectRevert(Errors.InvalidParam.selector);
         vm.prank(buyer1);
         sale.buy(100e6, new bytes32[](0));
 
-        // Can purchase within new limits
         vm.prank(buyer1);
         sale.buy(50e6, new bytes32[](0));
     }
@@ -481,12 +471,12 @@ contract TokenSaleDeepE2ETest is Test {
     }
 
     /// @notice Build Merkle tree and return root
-    function _buildMerkleTree(address[] memory addresses) internal pure returns (bytes32) {
+    function _buildMerkleTree(address[] memory addresses) internal view returns (bytes32) {
         if (addresses.length == 0) return bytes32(0);
         
         bytes32[] memory leaves = new bytes32[](addresses.length);
         for (uint256 i = 0; i < addresses.length; i++) {
-            leaves[i] = keccak256(abi.encodePacked(addresses[i]));
+            leaves[i] = keccak256(abi.encodePacked(block.chainid, address(sale), addresses[i]));
         }
         
         return _computeRoot(leaves);
@@ -516,14 +506,13 @@ contract TokenSaleDeepE2ETest is Test {
         return a < b ? keccak256(abi.encodePacked(a, b)) : keccak256(abi.encodePacked(b, a));
     }
 
-    /// @notice Get Merkle proof for an address
-    function _getProof(address[] memory addresses, address target) internal pure returns (bytes32[] memory) {
+    /// @notice Get Merkle proof for an address (MDS: domain separation)
+    function _getProof(address[] memory addresses, address target) internal view returns (bytes32[] memory) {
         bytes32[] memory leaves = new bytes32[](addresses.length);
         for (uint256 i = 0; i < addresses.length; i++) {
-            leaves[i] = keccak256(abi.encodePacked(addresses[i]));
+            leaves[i] = keccak256(abi.encodePacked(block.chainid, address(sale), addresses[i]));
         }
         
-        bytes32 leaf = keccak256(abi.encodePacked(target));
         uint256 index = 0;
         for (uint256 i = 0; i < addresses.length; i++) {
             if (addresses[i] == target) {
@@ -703,10 +692,14 @@ contract TokenSaleDeepE2ETest is Test {
         assertEq(saleToken.balanceOf(buyer3), 12_500 ether); // 25% of 50k
     }
 
-    /// @notice Test scenario: Contract balance validation with totalCap
+    /// @notice setTotalCap accounts for vesting allocations (cap <= availableForSale)
     function test_DeepE2E_ContractBalance_TotalCap_Interaction() public {
         uint64 nowTs = uint64(block.timestamp);
-        
+
+        vm.prank(admin);
+        treasury.withdrawERC20(saleToken, address(sale), 2_000_000 ether);
+        assertEq(saleToken.balanceOf(address(sale)), 7_000_000 ether);
+
         uint16[] memory percentages = new uint16[](4);
         percentages[0] = 2500;
         percentages[1] = 2500;
@@ -716,65 +709,27 @@ contract TokenSaleDeepE2ETest is Test {
         vm.prank(admin);
         sale.addStage(100, nowTs + 7 days, nowTs + 7 days + 3 days, 30 days, percentages);
 
-        // Contract has 5M tokens
-        assertEq(saleToken.balanceOf(address(sale)), 5_000_000 ether);
-
-        // Set cap to 3M (below balance, accounting for vesting allocations)
         vm.prank(admin);
         sale.setTotalCap(3_000_000 ether);
 
-        // Can purchase up to cap
         vm.prank(buyer1);
-        sale.buy(3000e6, new bytes32[](0)); // 3M tokens
+        sale.buy(3000e6, new bytes32[](0));
 
-        // Verify allocation
         assertEq(sale.totalAllocatedToVesting(), 3_000_000 ether);
-        assertEq(saleToken.balanceOf(address(sale)), 5_000_000 ether);
-        // Available for sale = 5M - 3M = 2M, but cap is 3M and 3M sold, so can't buy more
+        assertEq(saleToken.balanceOf(address(sale)), 7_000_000 ether);
 
-        // Cannot purchase more (hits cap)
         vm.expectRevert(Errors.InvalidParam.selector);
         vm.prank(buyer2);
         sale.buy(1e6, new bytes32[](0));
 
-        // But if we add more tokens to contract, still can't exceed cap
-        vm.prank(admin);
-        treasury.withdrawERC20(saleToken, address(sale), 1_000_000 ether);
-        
-        // Contract now has 6M tokens, but 3M allocated to vesting
-        // Available = 6M - 3M = 3M, but cap is 3M and 3M sold, so still can't purchase
         vm.expectRevert(Errors.InvalidParam.selector);
-        vm.prank(buyer2);
-        sale.buy(1e6, new bytes32[](0));
+        vm.prank(admin);
+        sale.setTotalCap(2_000_000 ether);
 
-        // Cannot increase cap to 4M - only 3M available (6M - 3M allocated)
-        vm.expectRevert(Errors.InsufficientBalance.selector);
         vm.prank(admin);
         sale.setTotalCap(4_000_000 ether);
-
-        // Verify that we can't set cap to 4M without enough available tokens
-        // Contract has 6M tokens, 3M allocated to vesting
-        // Available: 6M - 3M = 3M
-        // Can't set cap to 4M (would require 4M available, but only 3M available)
-        vm.expectRevert(Errors.InsufficientBalance.selector);
-        vm.prank(admin);
-        sale.setTotalCap(4_000_000 ether);
-        
-        // Add 1M more tokens to make 4M available
-        vm.prank(admin);
-        treasury.withdrawERC20(saleToken, address(sale), 1_000_000 ether);
-        
-        // Now contract balance: 7M, totalAllocatedToVesting: 3M
-        // Available: 7M - 3M = 4M
-        // Can set cap to 4M (3M sold + 1M available = 4M cap)
-        vm.prank(admin);
-        sale.setTotalCap(4_000_000 ether);
-        
-        // Verify cap was set
         assertEq(sale.totalCap(), 4_000_000 ether);
-        
-        // Now can purchase more (up to new cap), but stage has ended
-        // Add a new stage to allow purchases
+
         vm.prank(admin);
         sale.addStage(100, nowTs + 60 days, nowTs + 60 days + 3 days, 30 days, percentages);
         

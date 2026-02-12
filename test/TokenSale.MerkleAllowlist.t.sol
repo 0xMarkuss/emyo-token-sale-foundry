@@ -73,14 +73,13 @@ contract TokenSaleMerkleAllowlistTest is Test {
         _generateProofs(whitelist);
     }
 
-    /// @notice Build Merkle tree and return root
-    /// @dev Uses standard Merkle tree construction with sorted pairs
-    function _buildMerkleTree(address[] memory addresses) internal pure returns (bytes32) {
+    /// @notice Build Merkle tree and return root (MDS: domain separation with chainid + contract)
+    function _buildMerkleTree(address[] memory addresses) internal view returns (bytes32) {
         if (addresses.length == 0) return bytes32(0);
         
         bytes32[] memory leaves = new bytes32[](addresses.length);
         for (uint256 i = 0; i < addresses.length; i++) {
-            leaves[i] = keccak256(abi.encodePacked(addresses[i]));
+            leaves[i] = keccak256(abi.encodePacked(block.chainid, address(sale), addresses[i]));
         }
         
         return _computeRoot(leaves);
@@ -110,11 +109,11 @@ contract TokenSaleMerkleAllowlistTest is Test {
         return a < b ? keccak256(abi.encodePacked(a, b)) : keccak256(abi.encodePacked(b, a));
     }
 
-    /// @notice Generate Merkle proofs for all addresses
+    /// @notice Generate Merkle proofs for all addresses (MDS: domain separation)
     function _generateProofs(address[] memory addresses) internal {
         bytes32[] memory leaves = new bytes32[](addresses.length);
         for (uint256 i = 0; i < addresses.length; i++) {
-            leaves[i] = keccak256(abi.encodePacked(addresses[i]));
+            leaves[i] = keccak256(abi.encodePacked(block.chainid, address(sale), addresses[i]));
         }
         
         for (uint256 i = 0; i < addresses.length; i++) {
@@ -478,7 +477,7 @@ contract TokenSaleMerkleAllowlistTest is Test {
 
         for (uint256 i = 0; i < buyers.length; i++) {
             address buyer = buyers[i];
-            bytes32 leaf = keccak256(abi.encodePacked(buyer));
+            bytes32 leaf = keccak256(abi.encodePacked(block.chainid, address(sale), buyer));
             
             // Verify proof is valid using OpenZeppelin's library directly
             bytes32[] memory proof = proofs[buyer];
@@ -514,7 +513,7 @@ contract TokenSaleMerkleAllowlistTest is Test {
         vm.warp(nowTs + 1 days);
 
         // Verify proof is invalid for non-whitelisted address
-        bytes32 leaf = keccak256(abi.encodePacked(notWhitelisted));
+        bytes32 leaf = keccak256(abi.encodePacked(block.chainid, address(sale), notWhitelisted));
         bytes32[] memory proof = proofs[buyer1];
         bool isValid = MerkleProof.verify(proof, merkleRoot, leaf);
         assertFalse(isValid, "Proof should be invalid for non-whitelisted address");
@@ -553,7 +552,7 @@ contract TokenSaleMerkleAllowlistTest is Test {
         sale.setAllowlistMerkleRoot(newRoot);
 
         // Old proof should fail with new root
-        bytes32 leaf = keccak256(abi.encodePacked(buyer1));
+        bytes32 leaf = keccak256(abi.encodePacked(block.chainid, address(sale), buyer1));
         bytes32[] memory proof = proofs[buyer1];
         bool isValid = MerkleProof.verify(proof, newRoot, leaf);
         assertFalse(isValid, "Old proof should be invalid with new root");
@@ -653,7 +652,7 @@ contract TokenSaleMerkleAllowlistTest is Test {
         singleWhitelist[0] = buyer1;
         bytes32 singleRoot = _buildMerkleTree(singleWhitelist);
         bytes32[] memory singleLeaf = new bytes32[](1);
-        singleLeaf[0] = keccak256(abi.encodePacked(buyer1));
+        singleLeaf[0] = keccak256(abi.encodePacked(block.chainid, address(sale), buyer1));
         bytes32[] memory singleProof = _getProof(singleLeaf, 0);
 
         uint64 nowTs = uint64(block.timestamp);
@@ -672,7 +671,7 @@ contract TokenSaleMerkleAllowlistTest is Test {
         vm.warp(nowTs + 1 days);
 
         // Verify proof works
-        bytes32 leaf = keccak256(abi.encodePacked(buyer1));
+        bytes32 leaf = keccak256(abi.encodePacked(block.chainid, address(sale), buyer1));
         bool isValid = MerkleProof.verify(singleProof, singleRoot, leaf);
         assertTrue(isValid, "Single address proof should be valid");
 
@@ -702,7 +701,7 @@ contract TokenSaleMerkleAllowlistTest is Test {
         // Generate proofs for all addresses
         bytes32[] memory leaves = new bytes32[](8);
         for (uint256 i = 0; i < 8; i++) {
-            leaves[i] = keccak256(abi.encodePacked(largeWhitelist[i]));
+            leaves[i] = keccak256(abi.encodePacked(block.chainid, address(sale), largeWhitelist[i]));
         }
 
         uint64 nowTs = uint64(block.timestamp);
@@ -724,7 +723,7 @@ contract TokenSaleMerkleAllowlistTest is Test {
         for (uint256 i = 0; i < 4; i++) { // Test first 4 buyers
             address buyer = largeWhitelist[i];
             bytes32[] memory proof = _getProof(leaves, i);
-            bytes32 leaf = keccak256(abi.encodePacked(buyer));
+            bytes32 leaf = keccak256(abi.encodePacked(block.chainid, address(sale), buyer));
             
             // Verify proof
             bool isValid = MerkleProof.verify(proof, largeRoot, leaf);

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity 0.8.24;
 
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
@@ -16,6 +16,7 @@ contract Treasury is AccessControl, Pausable {
     using VestingLibrary for VestingLibrary.Schedule;
 
     mapping(IERC20 => mapping(address => VestingLibrary.Schedule)) public vestingSchedules;
+    mapping(IERC20 => uint256) internal _totalVestingObligations;
 
     event EtherReceived(address indexed from, uint256 amount);
     event EtherWithdrawn(address indexed to, uint256 amount);
@@ -57,6 +58,7 @@ contract Treasury is AccessControl, Pausable {
         if (amount > type(uint128).max) revert Errors.InvalidParam();
         if (s.released > type(uint128).max - uint128(amount)) revert Errors.InvalidParam();
         s.released += uint128(amount);
+        _totalVestingObligations[token] -= amount;
         token.safeTransfer(msg.sender, amount);
         emit TokensReleased(address(token), msg.sender, amount);
     }
@@ -100,6 +102,10 @@ contract Treasury is AccessControl, Pausable {
     {
         if (address(token) == address(0) || to == address(0)) revert Errors.ZeroAddress();
         if (amount == 0) revert Errors.ZeroAmount();
+        uint256 balance = token.balanceOf(address(this));
+        if (amount > balance) revert Errors.InsufficientBalance();
+        uint256 obligations = _totalVestingObligations[token];
+        if (balance - amount < obligations) revert Errors.InsufficientBalance();
         token.safeTransfer(to, amount);
         emit ERC20Withdrawn(address(token), to, amount);
     }
@@ -125,7 +131,8 @@ contract Treasury is AccessControl, Pausable {
         if (!VestingLibrary.validatePercentages(percentages)) revert Errors.InvalidVestingSchedule();
 
         uint256 contractBalance = token.balanceOf(address(this));
-        if (total > contractBalance) revert Errors.InsufficientBalance();
+        if (_totalVestingObligations[token] + total > contractBalance) revert Errors.InsufficientBalance();
+        if (start < block.timestamp) revert Errors.InvalidParam();
 
         VestingLibrary.Schedule storage s = vestingSchedules[token][beneficiary];
         if (s.total > 0) revert Errors.ScheduleAlreadyExists();
@@ -134,6 +141,7 @@ contract Treasury is AccessControl, Pausable {
         s.start = start;
         s.periodLength = periodLength;
         s.percentages = percentages;
+        _totalVestingObligations[token] += total;
 
         emit VestingScheduleSet(address(token), beneficiary, total, start, periodLength, percentages);
     }
@@ -151,10 +159,11 @@ contract Treasury is AccessControl, Pausable {
         if (s.total == 0) revert Errors.ScheduleNotFound();
 
         uint256 contractBalance = token.balanceOf(address(this));
-        if (s.total + additionalAmount > contractBalance) revert Errors.InsufficientBalance();
+        if (_totalVestingObligations[token] + additionalAmount > contractBalance) revert Errors.InsufficientBalance();
         if (s.total > type(uint128).max - additionalAmount) revert Errors.InvalidParam();
 
         s.total += additionalAmount;
+        _totalVestingObligations[token] += additionalAmount;
         emit VestingScheduleSet(
             address(token),
             beneficiary,
@@ -174,6 +183,7 @@ contract Treasury is AccessControl, Pausable {
         if (amount > type(uint128).max) revert Errors.InvalidParam();
         if (s.released > type(uint128).max - uint128(amount)) revert Errors.InvalidParam();
         s.released += uint128(amount);
+        _totalVestingObligations[token] -= amount;
         token.safeTransfer(beneficiary, amount);
         emit TokensReleased(address(token), beneficiary, amount);
     }
@@ -197,6 +207,7 @@ contract Treasury is AccessControl, Pausable {
         if (s.released > 0) revert Errors.TokensAlreadyReleased();
 
         uint256 remaining = s.total;
+        _totalVestingObligations[token] -= remaining;
         delete vestingSchedules[token][beneficiary];
         if (remaining > 0) {
             token.safeTransfer(recoveryAddress, remaining);
