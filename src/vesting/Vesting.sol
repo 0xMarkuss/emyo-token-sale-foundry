@@ -28,7 +28,7 @@ contract Vesting is AccessControl, Pausable, IVesting {
 
     event ScheduleCreated(
         address indexed beneficiary,
-        uint256 total,  // Schedule total after this addition
+        uint256 total,
         uint64 start,
         uint64 periodLength,
         uint16[] percentages
@@ -54,7 +54,7 @@ contract Vesting is AccessControl, Pausable, IVesting {
 
     // ============ External Functions ============
 
-    /// @notice Release vested tokens to beneficiary. Callable by beneficiary or VESTING_ADMIN_ROLE (MCA fix).
+    /// @notice Release vested tokens to beneficiary. Callable by beneficiary or VESTING_ADMIN_ROLE.
     function release(address beneficiary) external whenNotPaused returns (uint256 amount) {
         if (beneficiary == address(0)) revert Errors.ZeroAddress();
         if (msg.sender != beneficiary && !hasRole(Roles.VESTING_ADMIN_ROLE, msg.sender)) revert Errors.NotAuthorized();

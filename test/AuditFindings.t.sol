@@ -75,6 +75,42 @@ contract AuditFindingsTest is Test {
         assertEq(sale.totalSold(), 100_000 ether);
     }
 
+    function test_ICS_Buy_RevertIf_TotalCapExhausted() public {
+        uint16[] memory pct = new uint16[](4);
+        pct[0] = 2500; pct[1] = 2500; pct[2] = 2500; pct[3] = 2500;
+        uint64 nowTs = uint64(block.timestamp);
+
+        vm.prank(admin);
+        sale.addStage(100, nowTs + 7 days, nowTs + 10 days, 30 days, pct);
+        vm.prank(admin);
+        sale.setTotalCap(100_000 ether);
+
+        vm.prank(user1);
+        sale.buy(100e6, new bytes32[](0));
+
+        assertEq(sale.totalCap(), 0, "totalCap exhausted after buy");
+        vm.expectRevert(Errors.InvalidParam.selector);
+        vm.prank(user1);
+        sale.buy(1e6, new bytes32[](0));
+    }
+
+    function test_TRRP_topUpRewards_EarnedNeverExceedsBalance() public {
+        EmyoToken stkToken = EmyoToken(address(staking.stakingToken()));
+        stkToken.transfer(admin, 30_000 ether);
+        vm.prank(admin);
+        stkToken.approve(address(staking), 30_000 ether);
+
+        vm.prank(user1);
+        staking.stake(1_000 ether);
+        vm.prank(admin);
+        staking.topUpRewards(30_000 ether);
+
+        vm.warp(block.timestamp + 15 days);
+        uint256 earned = staking.earned(user1);
+        uint256 available = staking.getAvailableRewards();
+        assertLe(earned, available, "TRRP: earned must never exceed available rewards");
+    }
+
     function test_PETR_addStage_RevertIf_vestStartNotAfterEnd() public {
         uint16[] memory pct = new uint16[](4);
         pct[0] = 2500; pct[1] = 2500; pct[2] = 2500; pct[3] = 2500;
@@ -206,12 +242,14 @@ contract AuditFindingsTest is Test {
 
         vm.prank(admin);
         vesting.createOrIncreaseSchedule(user1, 1_000_000 ether, uint64(block.timestamp + 1), 30 days, pct);
-
         vm.warp(block.timestamp + 31 days);
+
+        vm.prank(user1);
+        vesting.release(user1);
+        assertGt(vesting.token().balanceOf(user1), 0);
 
         vm.prank(admin);
         vesting.release(user1);
-        assertGt(vesting.token().balanceOf(user1), 0);
 
         vm.expectRevert(Errors.NotAuthorized.selector);
         vm.prank(user2);

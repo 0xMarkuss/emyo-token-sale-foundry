@@ -122,49 +122,27 @@ contract StakingRewards is AccessControl, Pausable {
             if (availableFunds < requiredFunds) revert Errors.InvalidParam();
         }
         rewardRate = rate;
+        lastUpdateTime = block.timestamp;
         uint256 periodEndTime = rate > 0 ? _calculatePeriodEndTime(rate) : 0;
         periodFinish = periodEndTime;
         emit RewardRateUpdated(rate, periodEndTime);
     }
 
-    /// @notice Top-up rewards and set rate to distribute only the new amount over default period (TRRP fix).
-    /// @param amount Amount of rewards token to add (already includes decimals).
-    /// @dev Uses only the newly added amount for rate - does not re-spread already-accrued unclaimed rewards.
+    /// @notice Top-up rewards and set rate to distribute the new amount over default period.
     function topUpRewards(uint256 amount) external onlyRole(Roles.STAKING_ADMIN_ROLE) updateReward(address(0)) {
-        if (amount == 0) revert Errors.ZeroAmount();
-        rewardsToken.safeTransferFrom(msg.sender, address(this), amount);
-        
-        uint256 newRate = amount / DEFAULT_DISTRIBUTION_PERIOD;
-        if (newRate == 0) revert Errors.InvalidParam();
-        rewardRate = newRate;
-        uint256 periodEndTime = block.timestamp + DEFAULT_DISTRIBUTION_PERIOD;
-        periodFinish = periodEndTime;
-        
-        emit RewardsToppedUp(amount, newRate, periodEndTime);
+        _topUpRewards(amount, DEFAULT_DISTRIBUTION_PERIOD);
     }
 
-    /// @notice Top-up rewards and set rate to distribute only the new amount over custom period (TRRP fix).
-    /// @param amount Amount of rewards token to add (already includes decimals).
-    /// @param periodSeconds Period in seconds to distribute the rewards.
-    /// @dev Uses only the newly added amount for rate - does not re-spread already-accrued unclaimed rewards.
+    /// @notice Top-up rewards and set rate to distribute the new amount over custom period.
     function topUpRewardsWithPeriod(uint256 amount, uint256 periodSeconds) external onlyRole(Roles.STAKING_ADMIN_ROLE) updateReward(address(0)) {
-        if (amount == 0) revert Errors.ZeroAmount();
         if (periodSeconds == 0 || periodSeconds < 1 days) revert Errors.InvalidParam();
-        rewardsToken.safeTransferFrom(msg.sender, address(this), amount);
-        
-        uint256 newRate = amount / periodSeconds;
-        if (newRate == 0) revert Errors.InvalidParam();
-        rewardRate = newRate;
-        uint256 periodEndTime = block.timestamp + periodSeconds;
-        periodFinish = periodEndTime;
-        
-        emit RewardsToppedUp(amount, newRate, periodEndTime);
+        _topUpRewards(amount, periodSeconds);
     }
 
     // ============ View Functions ============
 
     /// @notice Calculate accumulated reward per token staked.
-    /// @dev Uses rewards token decimals for precision. Caps at periodFinish (URA fix).
+    /// @dev Uses rewards token decimals for precision. Caps at periodFinish.
     /// @return Current reward per token (scaled by 10^rewardsTokenDecimals).
     function rewardPerToken() public view returns (uint256) {
         if (totalStaked == 0) return rewardPerTokenStored;
@@ -195,7 +173,7 @@ contract StakingRewards is AccessControl, Pausable {
     /// @notice Calculate required funds for a given reward rate over default period.
     /// @param rate Reward rate (rewards per second).
     /// @return requiredFunds Amount of rewards token needed.
-    function calculateRequiredFunds(uint256 rate) external view returns (uint256 requiredFunds) {
+    function calculateRequiredFunds(uint256 rate) external pure returns (uint256 requiredFunds) {
         return _calculateRequiredFunds(rate);
     }
 
@@ -209,6 +187,17 @@ contract StakingRewards is AccessControl, Pausable {
     }
 
     // ============ Internal Functions ============
+
+    function _topUpRewards(uint256 amount, uint256 periodSeconds) internal {
+        if (amount == 0) revert Errors.ZeroAmount();
+        rewardsToken.safeTransferFrom(msg.sender, address(this), amount);
+        uint256 newRate = amount / periodSeconds;
+        if (newRate == 0) revert Errors.InvalidParam();
+        rewardRate = newRate;
+        lastUpdateTime = block.timestamp;
+        periodFinish = block.timestamp + periodSeconds;
+        emit RewardsToppedUp(amount, newRate, periodFinish);
+    }
 
     /// @notice Internal: Calculate when funds will run out for given rate.
     function _calculatePeriodEndTime(uint256 rate) internal view returns (uint256) {
@@ -224,7 +213,7 @@ contract StakingRewards is AccessControl, Pausable {
     }
 
     /// @notice Internal: Calculate required funds for rate over default period.
-    function _calculateRequiredFunds(uint256 rate) internal view returns (uint256) {
+    function _calculateRequiredFunds(uint256 rate) internal pure returns (uint256) {
         if (rate == 0) return 0;
         return rate * DEFAULT_DISTRIBUTION_PERIOD;
     }
