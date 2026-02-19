@@ -3,6 +3,7 @@ pragma solidity 0.8.24;
 
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {SafeERC20, IERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 import {Roles} from "../access/Roles.sol";
@@ -11,7 +12,7 @@ import {VestingLibrary} from "../vesting/VestingLibrary.sol";
 
 /// @title Treasury
 /// @notice Custody of tokens with vesting-based distribution and direct transfers.
-contract Treasury is AccessControl, Pausable {
+contract Treasury is AccessControl, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
     using VestingLibrary for VestingLibrary.Schedule;
 
@@ -50,16 +51,19 @@ contract Treasury is AccessControl, Pausable {
     // ============ External Functions ============
 
     /// @notice Release vested tokens to beneficiary.
-    function release(IERC20 token) external whenNotPaused returns (uint256 amount) {
+    function release(IERC20 token) external whenNotPaused nonReentrant returns (uint256 amount) {
         if (address(token) == address(0)) revert Errors.ZeroAddress();
         VestingLibrary.Schedule storage s = vestingSchedules[token][msg.sender];
         amount = releasableAmount(token, msg.sender);
         if (amount == 0) return 0;
         if (amount > type(uint128).max) revert Errors.InvalidParam();
         if (s.released > type(uint128).max - uint128(amount)) revert Errors.InvalidParam();
+        uint256 balanceBefore = token.balanceOf(address(this));
+        token.safeTransfer(msg.sender, amount);
+        amount = balanceBefore - token.balanceOf(address(this));
+        if (amount == 0) return 0;
         s.released += uint128(amount);
         _totalVestingObligations[token] -= amount;
-        token.safeTransfer(msg.sender, amount);
         emit TokensReleased(address(token), msg.sender, amount);
     }
 
@@ -85,6 +89,7 @@ contract Treasury is AccessControl, Pausable {
     function withdrawEther(address payable to, uint256 amount)
         external
         whenNotPaused
+        nonReentrant
         onlyRole(Roles.TREASURY_ROLE)
     {
         if (to == address(0)) revert Errors.ZeroAddress();
@@ -98,6 +103,7 @@ contract Treasury is AccessControl, Pausable {
     function withdrawERC20(IERC20 token, address to, uint256 amount)
         external
         whenNotPaused
+        nonReentrant
         onlyRole(Roles.TREASURY_ROLE)
     {
         if (address(token) == address(0) || to == address(0)) revert Errors.ZeroAddress();
@@ -175,16 +181,19 @@ contract Treasury is AccessControl, Pausable {
     }
 
     /// @notice Admin release vested tokens for a beneficiary.
-    function releaseFor(IERC20 token, address beneficiary) external whenNotPaused onlyRole(Roles.TREASURY_ROLE) returns (uint256 amount) {
+    function releaseFor(IERC20 token, address beneficiary) external whenNotPaused nonReentrant onlyRole(Roles.TREASURY_ROLE) returns (uint256 amount) {
         if (address(token) == address(0) || beneficiary == address(0)) revert Errors.ZeroAddress();
         VestingLibrary.Schedule storage s = vestingSchedules[token][beneficiary];
         amount = releasableAmount(token, beneficiary);
         if (amount == 0) return 0;
         if (amount > type(uint128).max) revert Errors.InvalidParam();
         if (s.released > type(uint128).max - uint128(amount)) revert Errors.InvalidParam();
+        uint256 balanceBefore = token.balanceOf(address(this));
+        token.safeTransfer(beneficiary, amount);
+        amount = balanceBefore - token.balanceOf(address(this));
+        if (amount == 0) return 0;
         s.released += uint128(amount);
         _totalVestingObligations[token] -= amount;
-        token.safeTransfer(beneficiary, amount);
         emit TokensReleased(address(token), beneficiary, amount);
     }
 
@@ -197,7 +206,7 @@ contract Treasury is AccessControl, Pausable {
         IERC20 token,
         address beneficiary,
         address recoveryAddress
-    ) external whenNotPaused onlyRole(Roles.TREASURY_ROLE) {
+    ) external whenNotPaused nonReentrant onlyRole(Roles.TREASURY_ROLE) {
         if (address(token) == address(0) || beneficiary == address(0) || recoveryAddress == address(0)) {
             revert Errors.ZeroAddress();
         }

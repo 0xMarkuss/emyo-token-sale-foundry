@@ -3,6 +3,7 @@ pragma solidity 0.8.24;
 
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -13,7 +14,7 @@ import {Errors} from "../libs/Errors.sol";
 /// @title StakingRewards
 /// @notice Minimal single-sided staking with continuous rewards rate (per second).
 /// @dev Reward rate is in rewards per second, scaled by rewards token decimals.
-contract StakingRewards is AccessControl, Pausable {
+contract StakingRewards is AccessControl, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     IERC20 public immutable stakingToken;
@@ -64,16 +65,19 @@ contract StakingRewards is AccessControl, Pausable {
     // ============ External Functions ============
 
     /// @notice Stake tokens to earn rewards.
-    function stake(uint256 amount) external whenNotPaused updateReward(msg.sender) {
+    function stake(uint256 amount) external whenNotPaused nonReentrant updateReward(msg.sender) {
         if (amount == 0) revert Errors.ZeroAmount();
-        totalStaked += amount;
-        balances[msg.sender] += amount;
+        uint256 balanceBefore = stakingToken.balanceOf(address(this));
         stakingToken.safeTransferFrom(msg.sender, address(this), amount);
-        emit Staked(msg.sender, amount);
+        uint256 actualReceived = stakingToken.balanceOf(address(this)) - balanceBefore;
+        if (actualReceived == 0) revert Errors.ZeroAmount();
+        totalStaked += actualReceived;
+        balances[msg.sender] += actualReceived;
+        emit Staked(msg.sender, actualReceived);
     }
 
     /// @notice Withdraw staked tokens.
-    function withdraw(uint256 amount) public whenNotPaused updateReward(msg.sender) {
+    function withdraw(uint256 amount) public whenNotPaused nonReentrant updateReward(msg.sender) {
         if (amount == 0) revert Errors.ZeroAmount();
         if (amount > balances[msg.sender]) revert Errors.InsufficientBalance();
         balances[msg.sender] -= amount;
@@ -83,7 +87,7 @@ contract StakingRewards is AccessControl, Pausable {
     }
 
     /// @notice Claim earned rewards.
-    function getReward() public whenNotPaused updateReward(msg.sender) {
+    function getReward() public whenNotPaused nonReentrant updateReward(msg.sender) {
         uint256 reward = rewards[msg.sender];
         rewards[msg.sender] = 0;
         rewardsToken.safeTransfer(msg.sender, reward);

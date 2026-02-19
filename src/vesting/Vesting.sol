@@ -3,6 +3,7 @@ pragma solidity 0.8.24;
 
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
@@ -13,7 +14,7 @@ import {VestingLibrary} from "./VestingLibrary.sol";
 
 /// @title Vesting
 /// @notice Schedule-based vesting; schedules are created by authorized roles.
-contract Vesting is AccessControl, Pausable, IVesting {
+contract Vesting is AccessControl, Pausable, ReentrancyGuard, IVesting {
     using SafeERC20 for IERC20;
     using VestingLibrary for VestingLibrary.Schedule;
 
@@ -55,7 +56,7 @@ contract Vesting is AccessControl, Pausable, IVesting {
     // ============ External Functions ============
 
     /// @notice Release vested tokens to beneficiary. Callable by beneficiary or VESTING_ADMIN_ROLE.
-    function release(address beneficiary) external whenNotPaused returns (uint256 amount) {
+    function release(address beneficiary) external whenNotPaused nonReentrant returns (uint256 amount) {
         if (beneficiary == address(0)) revert Errors.ZeroAddress();
         if (msg.sender != beneficiary && !hasRole(Roles.VESTING_ADMIN_ROLE, msg.sender)) revert Errors.NotAuthorized();
         IVesting.Schedule storage s = _schedules[beneficiary];
@@ -63,10 +64,14 @@ contract Vesting is AccessControl, Pausable, IVesting {
         if (amount == 0) return 0;
         if (amount > type(uint128).max) revert Errors.InvalidParam();
         if (s.released > type(uint128).max - uint128(amount)) revert Errors.InvalidParam();
-        s.released += uint128(amount);
-        _totalObligations -= amount;
+        uint256 balanceBefore = token.balanceOf(address(this));
         token.safeTransfer(beneficiary, amount);
-        emit TokensReleased(beneficiary, amount);
+        uint256 actualReleased = balanceBefore - token.balanceOf(address(this));
+        if (actualReleased == 0) return 0;
+        s.released += uint128(actualReleased);
+        _totalObligations -= actualReleased;
+        emit TokensReleased(beneficiary, actualReleased);
+        return actualReleased;
     }
 
     // ============ Admin Functions ============

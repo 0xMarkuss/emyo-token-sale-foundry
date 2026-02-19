@@ -3,6 +3,7 @@ pragma solidity 0.8.24;
 
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {SafeERC20, IERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
@@ -13,7 +14,7 @@ import {VestingLibrary} from "../vesting/VestingLibrary.sol";
 
 /// @title TokenSale
 /// @notice Multi-stage sale with integrated schedule-based vesting.
-contract TokenSale is AccessControl, Pausable {
+contract TokenSale is AccessControl, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
     using VestingLibrary for VestingLibrary.Schedule;
 
@@ -115,7 +116,7 @@ contract TokenSale is AccessControl, Pausable {
     /// @param merkleProof Merkle proof for the buyer's address (required if allowlist is enabled, can be empty array if disabled).
     /// @dev Each stage purchase creates a separate vesting schedule for the user.
     /// @dev If user buys at stage 0 and stage 1, tokens will be released according to their respective schedules.
-    function buy(uint128 paymentAmount, bytes32[] calldata merkleProof) external whenNotPaused {
+    function buy(uint128 paymentAmount, bytes32[] calldata merkleProof) external whenNotPaused nonReentrant {
         if (paymentAmount == 0) revert Errors.ZeroAmount();
 
         (bool active, uint256 stageId, Stage memory st) = _currentStage();
@@ -131,9 +132,14 @@ contract TokenSale is AccessControl, Pausable {
 
         PurchaseConfig memory lim = userLimits[msg.sender];
         if (lim.min > 0 && paymentAmount < lim.min) revert Errors.InvalidParam();
-        if (lim.max > 0 && totalPurchasedByUser[msg.sender] + paymentAmount > lim.max) revert Errors.InvalidParam();
 
-        uint256 tokensOut = (uint256(paymentAmount) * PRICE_SCALE * decimalScale) / uint256(st.emyPriceUsd);
+        uint256 balanceBefore = paymentToken.balanceOf(treasury);
+        paymentToken.safeTransferFrom(msg.sender, treasury, paymentAmount);
+        uint256 actualPayment = paymentToken.balanceOf(treasury) - balanceBefore;
+        if (actualPayment == 0) revert Errors.InvalidParam();
+        if (lim.max > 0 && totalPurchasedByUser[msg.sender] + actualPayment > lim.max) revert Errors.InvalidParam();
+
+        uint256 tokensOut = (actualPayment * PRICE_SCALE * decimalScale) / uint256(st.emyPriceUsd);
         if (tokensOut == 0) revert Errors.InvalidParam();
         if (tokensOut > type(uint128).max) revert Errors.InvalidParam();
         if (totalCap != type(uint256).max && (tokensOut > totalCap || totalCap == 0)) revert Errors.InvalidParam();
@@ -144,15 +150,14 @@ contract TokenSale is AccessControl, Pausable {
         totalSold += tokensOut;
         if (totalCap != type(uint256).max) totalCap -= tokensOut;
         totalAllocatedToVesting += tokensOut;
-        totalPurchasedByUser[msg.sender] += paymentAmount;
+        totalPurchasedByUser[msg.sender] += actualPayment;
         _updateVestingSchedule(msg.sender, stageId, uint128(tokensOut), st.vestStart, st.vestPeriodLength, st.vestPercentages);
-        paymentToken.safeTransferFrom(msg.sender, treasury, paymentAmount);
 
-        emit Purchased(msg.sender, stageId, paymentAmount, tokensOut);
+        emit Purchased(msg.sender, stageId, actualPayment, tokensOut);
     }
 
     /// @notice Release vested tokens to beneficiary from all schedules.
-    function release() external whenNotPaused returns (uint256 amount) {
+    function release() external whenNotPaused nonReentrant returns (uint256 amount) {
         return _release(msg.sender);
     }
 
@@ -245,7 +250,7 @@ contract TokenSale is AccessControl, Pausable {
     }
 
     /// @notice Admin release vested tokens for a beneficiary from all schedules.
-    function releaseFor(address beneficiary) external whenNotPaused onlyRole(Roles.SALE_ADMIN_ROLE) returns (uint256 amount) {
+    function releaseFor(address beneficiary) external whenNotPaused nonReentrant onlyRole(Roles.SALE_ADMIN_ROLE) returns (uint256 amount) {
         if (beneficiary == address(0)) revert Errors.ZeroAddress();
         return _release(beneficiary);
     }
@@ -355,33 +360,39 @@ contract TokenSale is AccessControl, Pausable {
     function _release(address beneficiary) internal returns (uint256 amount) {
         amount = releasableAmount(beneficiary);
         if (amount == 0) return 0;
-        
+
         uint256[] storage userStageIds = userStages[beneficiary];
         uint256 len = userStageIds.length;
         uint256 remaining = amount;
-        
-        for (uint256 i = 0; i < len && remaining > 0; i++) {
+        uint64 nowTs = uint64(block.timestamp);
+
+        for (uint256 i; i < len && remaining > 0;) {
             uint256 stageId = userStageIds[i];
             VestingLibrary.Schedule storage s = vestingSchedules[beneficiary][stageId];
-            if (s.total == 0) continue;
-            
-            uint256 releasable = VestingLibrary.releasableAmount(s, uint64(block.timestamp));
-            if (releasable == 0) continue;
-            
-            uint256 toRelease = releasable < remaining ? releasable : remaining;
-            if (toRelease > type(uint128).max) revert Errors.InvalidParam();
-            if (s.released > type(uint128).max - uint128(toRelease)) revert Errors.InvalidParam();
-            s.released += uint128(toRelease);
-            remaining -= toRelease;
+            if (s.total != 0) {
+                uint256 releasable = VestingLibrary.releasableAmount(s, nowTs);
+                if (releasable != 0) {
+                    uint256 toRelease = releasable < remaining ? releasable : remaining;
+                    if (toRelease > type(uint128).max) revert Errors.InvalidParam();
+                    if (s.released > type(uint128).max - uint128(toRelease)) revert Errors.InvalidParam();
+                    s.released += uint128(toRelease);
+                    remaining -= toRelease;
+                }
+            }
+            unchecked { ++i; }
         }
         if (remaining != 0) revert Errors.InvalidParam();
         
+        uint256 balanceBefore = saleToken.balanceOf(address(this));
+        saleToken.safeTransfer(beneficiary, amount);
+        amount = balanceBefore - saleToken.balanceOf(address(this));
+        if (amount == 0) return 0;
+
         if (totalAllocatedToVesting >= amount) {
             totalAllocatedToVesting -= amount;
         } else {
             totalAllocatedToVesting = 0;
         }
-        saleToken.safeTransfer(beneficiary, amount);
         emit TokensReleased(beneficiary, amount);
     }
 
