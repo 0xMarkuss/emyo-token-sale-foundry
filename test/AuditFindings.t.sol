@@ -2,6 +2,7 @@
 pragma solidity 0.8.24;
 
 import {Test} from "forge-std/Test.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {TokenSale} from "src/sale/TokenSale.sol";
 import {Treasury} from "src/treasury/Treasury.sol";
 import {EmyoToken} from "src/token/EmyoToken.sol";
@@ -56,7 +57,7 @@ contract AuditFindingsTest is Test {
         vestToken.transfer(address(vesting), 5_000_000 ether);
     }
 
-    function test_ICS_setTotalCap_ConsistentAbsoluteLimit() public {
+    function test_ICS_setTotalCap_ConsistentRemainingLimit() public {
         uint16[] memory pct = new uint16[](4);
         pct[0] = 2500; pct[1] = 2500; pct[2] = 2500; pct[3] = 2500;
         uint64 nowTs = uint64(block.timestamp);
@@ -70,7 +71,7 @@ contract AuditFindingsTest is Test {
         vm.prank(user1);
         sale.buy(100e6, new bytes32[](0));
 
-        assertEq(sale.totalCap(), 1_000_000 ether);
+        assertEq(sale.totalCap(), 900_000 ether, "totalCap = remaining, decremented by tokensOut");
         assertEq(sale.totalSold(), 100_000 ether);
     }
 
@@ -187,6 +188,34 @@ contract AuditFindingsTest is Test {
         vm.expectRevert(Errors.InvalidParam.selector);
         vm.prank(admin);
         staking.setRewardRate(200_000 ether);
+    }
+
+    function test_ZRRR_topUpRewards_RevertIf_ZeroRate() public {
+        IERC20 stk = staking.stakingToken();
+        stk.transfer(admin, 1000);
+        vm.prank(admin);
+        stk.approve(address(staking), 1000);
+        vm.expectRevert(Errors.InvalidParam.selector);
+        vm.prank(admin);
+        staking.topUpRewards(1000);
+    }
+
+    function test_MCA_Vesting_Release_AllowedForBeneficiaryOrAdmin() public {
+        uint16[] memory pct = new uint16[](4);
+        pct[0] = 2500; pct[1] = 2500; pct[2] = 2500; pct[3] = 2500;
+
+        vm.prank(admin);
+        vesting.createOrIncreaseSchedule(user1, 1_000_000 ether, uint64(block.timestamp + 1), 30 days, pct);
+
+        vm.warp(block.timestamp + 31 days);
+
+        vm.prank(admin);
+        vesting.release(user1);
+        assertGt(vesting.token().balanceOf(user1), 0);
+
+        vm.expectRevert(Errors.NotAuthorized.selector);
+        vm.prank(user2);
+        vesting.release(user1);
     }
 
     function test_Treasury_withdrawERC20_RevertIf_BelowObligations() public {

@@ -628,7 +628,7 @@ contract TokenSaleMultiStageTest is Test {
         assertEq(sched3_1.length, 6);
     }
 
-    /// @notice ICS fix: setTotalCap uses absolute lifetime limit
+    /// @notice ICS fix: setTotalCap = remaining, aligned with availableForSale
     function test_TotalCap_ValidatesAgainstTokenBalance() public {
         uint64 nowTs = uint64(block.timestamp);
         
@@ -646,10 +646,12 @@ contract TokenSaleMultiStageTest is Test {
 
         vm.prank(buyer1);
         sale.buy(100e6, new bytes32[](0));
+        assertEq(sale.totalCap(), 4_900_000 ether);
 
-        vm.expectRevert(Errors.InvalidParam.selector);
+        uint256 availableForSale = saleToken.balanceOf(address(sale)) - sale.totalAllocatedToVesting();
+        vm.expectRevert(Errors.InsufficientBalance.selector);
         vm.prank(admin);
-        sale.setTotalCap(50_000 ether);
+        sale.setTotalCap(availableForSale + 1);
     }
 
     /// @notice Test that buy fails if contract doesn't have enough tokens even if cap allows

@@ -127,20 +127,15 @@ contract StakingRewards is AccessControl, Pausable {
         emit RewardRateUpdated(rate, periodEndTime);
     }
 
-    /// @notice Top-up rewards and automatically set rate to distribute all available rewards over default period.
+    /// @notice Top-up rewards and set rate to distribute only the new amount over default period (TRRP fix).
     /// @param amount Amount of rewards token to add (already includes decimals).
-    /// @dev Restricted to STAKING_ADMIN_ROLE to prevent TRRP - anyone resetting reward policy.
+    /// @dev Uses only the newly added amount for rate - does not re-spread already-accrued unclaimed rewards.
     function topUpRewards(uint256 amount) external onlyRole(Roles.STAKING_ADMIN_ROLE) updateReward(address(0)) {
         if (amount == 0) revert Errors.ZeroAmount();
         rewardsToken.safeTransferFrom(msg.sender, address(this), amount);
         
-        uint256 totalAvailableBalance = rewardsToken.balanceOf(address(this));
-        uint256 availableRewards = totalAvailableBalance;
-        if (address(stakingToken) == address(rewardsToken)) {
-            availableRewards = totalAvailableBalance >= totalStaked ? totalAvailableBalance - totalStaked : 0;
-        }
-        
-        uint256 newRate = availableRewards / DEFAULT_DISTRIBUTION_PERIOD;
+        uint256 newRate = amount / DEFAULT_DISTRIBUTION_PERIOD;
+        if (newRate == 0) revert Errors.InvalidParam();
         rewardRate = newRate;
         uint256 periodEndTime = block.timestamp + DEFAULT_DISTRIBUTION_PERIOD;
         periodFinish = periodEndTime;
@@ -148,22 +143,17 @@ contract StakingRewards is AccessControl, Pausable {
         emit RewardsToppedUp(amount, newRate, periodEndTime);
     }
 
-    /// @notice Top-up rewards and set rate to distribute all available rewards over custom period.
+    /// @notice Top-up rewards and set rate to distribute only the new amount over custom period (TRRP fix).
     /// @param amount Amount of rewards token to add (already includes decimals).
     /// @param periodSeconds Period in seconds to distribute the rewards.
-    /// @dev Restricted to STAKING_ADMIN_ROLE to prevent TRRP.
+    /// @dev Uses only the newly added amount for rate - does not re-spread already-accrued unclaimed rewards.
     function topUpRewardsWithPeriod(uint256 amount, uint256 periodSeconds) external onlyRole(Roles.STAKING_ADMIN_ROLE) updateReward(address(0)) {
         if (amount == 0) revert Errors.ZeroAmount();
         if (periodSeconds == 0 || periodSeconds < 1 days) revert Errors.InvalidParam();
         rewardsToken.safeTransferFrom(msg.sender, address(this), amount);
         
-        uint256 totalAvailableBalance = rewardsToken.balanceOf(address(this));
-        uint256 availableRewards = totalAvailableBalance;
-        if (address(stakingToken) == address(rewardsToken)) {
-            availableRewards = totalAvailableBalance >= totalStaked ? totalAvailableBalance - totalStaked : 0;
-        }
-        
-        uint256 newRate = availableRewards / periodSeconds;
+        uint256 newRate = amount / periodSeconds;
+        if (newRate == 0) revert Errors.InvalidParam();
         rewardRate = newRate;
         uint256 periodEndTime = block.timestamp + periodSeconds;
         periodFinish = periodEndTime;

@@ -454,8 +454,8 @@ contract TokenSaleTest is Test {
         assertEq(sale.totalCap(), 1_000_000 ether);
     }
 
-    /// @notice ICS fix: setTotalCap uses absolute lifetime limit (cap >= totalSold)
-    function test_SetTotalCap_ICS_AbsoluteLifetimeLimit() public {
+    /// @notice ICS fix: setTotalCap = remaining to sell, aligned with availableForSale
+    function test_SetTotalCap_ICS_RemainingLimit() public {
         uint64 nowTs = uint64(block.timestamp);
         uint16[] memory percentages = new uint16[](4);
         percentages[0] = 2500;
@@ -476,9 +476,9 @@ contract TokenSaleTest is Test {
         sale.setTotalCap(500_000 ether);
         assertEq(sale.totalCap(), 500_000 ether);
 
-        vm.expectRevert(Errors.InvalidParam.selector);
         vm.prank(admin);
         sale.setTotalCap(400_000 ether);
+        assertEq(sale.totalCap(), 400_000 ether);
     }
 
     function test_SetTotalCap_RevertIf_Zero() public {
@@ -487,7 +487,7 @@ contract TokenSaleTest is Test {
         sale.setTotalCap(0);
     }
 
-    function test_SetTotalCap_RevertIf_BelowTotalSold() public {
+    function test_SetTotalCap_Remaining_DecrementsOnBuy() public {
         uint64 nowTs = uint64(block.timestamp);
         uint16[] memory percentages = new uint16[](4);
         percentages[0] = 2500;
@@ -497,14 +497,16 @@ contract TokenSaleTest is Test {
 
         vm.startPrank(admin);
         sale.addStage(100, nowTs + 7 days, nowTs + 10 days, 30 days, percentages);
+        sale.setTotalCap(1_000_000 ether);
         vm.stopPrank();
 
         vm.prank(buyer1);
-        sale.buy(100e6, new bytes32[](0)); // 100k tokens sold
+        sale.buy(100e6, new bytes32[](0));
+        assertEq(sale.totalCap(), 900_000 ether);
 
-        vm.expectRevert(Errors.InvalidParam.selector);
-        vm.prank(admin);
-        sale.setTotalCap(50_000 ether); // Below 100k sold
+        vm.prank(buyer1);
+        sale.buy(200e6, new bytes32[](0));
+        assertEq(sale.totalCap(), 700_000 ether);
     }
 
     function test_SetTotalCap_RevertIf_AboveAvailableForSale() public {

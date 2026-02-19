@@ -267,9 +267,7 @@ contract StakingRewardsTest is Test {
         staking.topUpRewards(amount);
 
         assertEq(rewardsToken.balanceOf(address(staking)), 100_000 ether + amount);
-        // Rate is calculated based on TOTAL available balance (100k + 30k = 130k), not just the new amount
-        uint256 totalAvailableRewards = 100_000 ether + amount; // Total balance since stakingToken == rewardsToken
-        uint256 expectedRate = totalAvailableRewards / staking.DEFAULT_DISTRIBUTION_PERIOD();
+        uint256 expectedRate = amount / staking.DEFAULT_DISTRIBUTION_PERIOD();
         assertEq(staking.rewardRate(), expectedRate);
     }
 
@@ -290,9 +288,7 @@ contract StakingRewardsTest is Test {
         staking.topUpRewardsWithPeriod(amount, periodSeconds);
 
         assertEq(rewardsToken.balanceOf(address(staking)), 100_000 ether + amount);
-        // Rate is calculated based on TOTAL available balance (100k + 10k = 110k), not just the new amount
-        uint256 totalAvailableRewards = 100_000 ether + amount; // Total balance since stakingToken == rewardsToken
-        uint256 expectedRate = totalAvailableRewards / periodSeconds;
+        uint256 expectedRate = amount / periodSeconds;
         assertEq(staking.rewardRate(), expectedRate);
     }
 

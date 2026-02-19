@@ -722,9 +722,9 @@ contract TokenSaleDeepE2ETest is Test {
         vm.prank(buyer2);
         sale.buy(1e6, new bytes32[](0));
 
-        vm.expectRevert(Errors.InvalidParam.selector);
+        vm.expectRevert(Errors.InsufficientBalance.selector);
         vm.prank(admin);
-        sale.setTotalCap(2_000_000 ether);
+        sale.setTotalCap(5_000_000 ether);
 
         vm.prank(admin);
         sale.setTotalCap(4_000_000 ether);

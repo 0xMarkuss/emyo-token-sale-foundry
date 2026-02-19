@@ -44,7 +44,8 @@ contract TokenSale is AccessControl, Pausable {
     uint256 public immutable decimalScale;
 
     Stage[] public stages;
-    uint256 public totalCap;
+    /// @notice Remaining tokens available for sale. type(uint256).max = no cap. When > 0 and < max, decremented on each purchase.
+    uint256 public totalCap = type(uint256).max;
     uint256 public totalSold;
     uint256 public totalAllocatedToVesting;
     mapping(address => PurchaseConfig) public userLimits;
@@ -135,12 +136,13 @@ contract TokenSale is AccessControl, Pausable {
         uint256 tokensOut = (uint256(paymentAmount) * PRICE_SCALE * decimalScale) / uint256(st.emyPriceUsd);
         if (tokensOut == 0) revert Errors.InvalidParam();
         if (tokensOut > type(uint128).max) revert Errors.InvalidParam();
-        if (totalCap > 0 && totalSold + tokensOut > totalCap) revert Errors.InvalidParam();
+        if (totalCap != type(uint256).max && (tokensOut > totalCap || totalCap == 0)) revert Errors.InvalidParam();
 
         uint256 availableBalance = saleToken.balanceOf(address(this));
         if (totalAllocatedToVesting + tokensOut > availableBalance) revert Errors.InsufficientBalance();
 
         totalSold += tokensOut;
+        if (totalCap != type(uint256).max) totalCap -= tokensOut;
         totalAllocatedToVesting += tokensOut;
         totalPurchasedByUser[msg.sender] += paymentAmount;
         _updateVestingSchedule(msg.sender, stageId, uint128(tokensOut), st.vestStart, st.vestPeriodLength, st.vestPercentages);
@@ -157,11 +159,11 @@ contract TokenSale is AccessControl, Pausable {
     // ============ Admin Functions ============
 
     /// @notice Add a new sale stage with vesting parameters.
-    /// @param emyPriceUsd EMY price in USD scaled by PRICE_SCALE (100000).
-    ///                    Examples: 
-    ///                    - 100000 = $1.00 per EMY (1 USDC = 1 EMY)
-    ///                    - 1 = $0.00001 per EMY (1 USDC = 100000 EMY)
-    ///                    - 125000 = $1.25 per EMY (1 USDC = 0.8 EMY)
+    /// @param emyPriceUsd EMY price in USD, scaled by PRICE_SCALE (100_000). NOT payment token decimals.
+    ///                    Examples (PRICE_SCALE = 100_000): 
+    ///                    - 100_000 = $1.00 per EMY (1 USDC = 1 EMY)
+    ///                    - 1 = $0.00001 per EMY
+    ///                    - 125_000 = $1.25 per EMY
     /// @param end Stage end timestamp
     /// @param vestStart Vesting start timestamp (same for all users in this stage)
     /// @param vestPeriodLength Length of each vesting period
@@ -217,14 +219,17 @@ contract TokenSale is AccessControl, Pausable {
         emit AllowlistEnabledSet(enabled);
     }
 
-    /// @notice Set the total cap for token sales (absolute lifetime limit).
+    /// @notice Set remaining tokens available for sale.
+    /// @dev totalCap = remaining to sell; buy() checks tokensOut <= totalCap and decrements totalCap.
     /// @dev Cap cannot exceed tokens available for sale (balance minus vesting allocations).
+    /// @param cap Remaining tokens that may be sold. Use type(uint256).max to disable cap.
     function setTotalCap(uint256 cap) external onlyRole(Roles.SALE_ADMIN_ROLE) {
         if (cap == 0) revert Errors.InvalidParam();
-        if (cap < totalSold) revert Errors.InvalidParam();
-        uint256 availableBalance = saleToken.balanceOf(address(this));
-        uint256 availableForSale = availableBalance - totalAllocatedToVesting;
-        if (cap > availableForSale) revert Errors.InsufficientBalance();
+        if (cap != type(uint256).max) {
+            uint256 availableBalance = saleToken.balanceOf(address(this));
+            uint256 availableForSale = availableBalance - totalAllocatedToVesting;
+            if (cap > availableForSale) revert Errors.InsufficientBalance();
+        }
         totalCap = cap;
         emit TotalCapSet(cap);
     }
